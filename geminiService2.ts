@@ -26,7 +26,7 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
   if (isLocal) {
     const ai = getAIInstance();
     const response = await ai.models.generateContent({
-      model: 'gemini-1.5-flash-latest',
+      model: 'gemini-1.5-flash',
       contents,
       config
     });
@@ -152,7 +152,7 @@ FORMATO OBLIGATORIO:
     if (isLocal) {
       const ai = getAIInstance();
       const result = await ai.models.generateContentStream({
-        model: 'gemini-1.5-flash-latest',
+        model: 'gemini-1.5-flash',
         contents,
         config: { systemInstruction }
       });

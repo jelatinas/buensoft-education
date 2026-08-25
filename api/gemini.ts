@@ -18,7 +18,7 @@ export default async function handler(req: any, res: any) {
     switch (action) {
       case 'generateTeacherResponse': {
         const response = await ai.models.generateContent({
-          model: 'gemini-1.5-flash-latest',
+          model: 'gemini-1.5-flash',
           contents: payload.contents,
           config: payload.config
         });
@@ -31,7 +31,7 @@ export default async function handler(req: any, res: any) {
       case 'evaluateStudentAnswer':
       case 'validateOpenAnswer': {
         const response = await ai.models.generateContent({
-          model: 'gemini-1.5-flash-latest',
+          model: 'gemini-1.5-flash',
           contents: payload.contents,
           config: payload.config
         });
