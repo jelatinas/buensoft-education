@@ -20,6 +20,31 @@ const getAIInstance = () => {
   return new GoogleGenAI({ apiKey });
 };
 
+const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+
+const callGeminiApi = async (action: string, contents: any[], config: any) => {
+  if (isLocal) {
+    const ai = getAIInstance();
+    const response = await ai.models.generateContent({
+      model: 'gemini-1.5-flash-latest',
+      contents,
+      config
+    });
+    return response;
+  } else {
+    const res = await fetch('/api/gemini', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, payload: { contents, config } })
+    });
+    if (!res.ok) {
+       const errorData = await res.json().catch(() => ({}));
+       throw new Error(errorData.error || `API Error: ${res.statusText}`);
+    }
+    return await res.json();
+  }
+};
+
 const cleanJsonResponse = (text: string): string => {
   let cleaned = text.trim();
   
@@ -121,16 +146,30 @@ FORMATO OBLIGATORIO:
 
   // Use streaming to show text progressively
   const streamFn = async () => {
-    const result = await ai.models.generateContentStream({
-      model: 'gemini-3.6-flash',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: { systemInstruction }
-    });
     let fullText = '';
-    for await (const chunk of result) {
-      const chunkText = chunk.text || '';
-      fullText += chunkText;
-      if (onChunk && chunkText) onChunk(fullText);
+    const contents = [{ role: 'user', parts: [{ text: prompt }] }];
+    
+    if (isLocal) {
+      const ai = getAIInstance();
+      const result = await ai.models.generateContentStream({
+        model: 'gemini-1.5-flash-latest',
+        contents,
+        config: { systemInstruction }
+      });
+      for await (const chunk of result) {
+        const chunkText = chunk.text || '';
+        fullText += chunkText;
+        if (onChunk && chunkText) onChunk(fullText);
+      }
+    } else {
+      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction });
+      fullText = response.text || '';
+      // Simulate streaming for production proxy
+      for (let i = 0; i < fullText.length; i += 6) {
+        if (onChunk) onChunk(fullText.substring(0, i));
+        await new Promise(r => setTimeout(r, 10)); // fast typing simulation
+      }
+      if (onChunk) onChunk(fullText);
     }
     return fullText;
   };
@@ -151,19 +190,15 @@ Evalúa si la respuesta es correcta o al menos demuestra comprensión razonable.
 Si es incorrecta, debes formular UNA NUEVA PREGUNTA de refuerzo sobre el mismo tema dentro de tu retroalimentación para que el estudiante vuelva a intentarlo.
 Responde obligatoriamente en JSON con este formato: {"aprobado": true/false, "retroalimentacion": "<explicación breve y, si falló, incluye aquí la nueva pregunta>"}`;
 
-  const response = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3.6-flash',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          aprobado: { type: Type.BOOLEAN },
-          retroalimentacion: { type: Type.STRING }
-        },
-        required: ["aprobado", "retroalimentacion"]
-      }
+  const response = await withRetry(() => callGeminiApi('evaluateStudentAnswer', [{ role: 'user', parts: [{ text: prompt }] }], {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        aprobado: { type: Type.BOOLEAN },
+        retroalimentacion: { type: Type.STRING }
+      },
+      required: ["aprobado", "retroalimentacion"]
     }
   }));
 
@@ -206,32 +241,28 @@ export const generateExam = async (lessonTitle: string, chatHistory: any[], need
   
   JSON: questions[{id, question, type, options[], correct_answer, explanation}]`;
 
-  const response = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3.6-flash',
-    contents: [{ role: 'user', parts: [{ text: examPrompt }] }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          questions: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.INTEGER },
-                question: { type: Type.STRING },
-                type: { type: Type.STRING },
-                options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                correct_answer: { type: Type.STRING },
-                explanation: { type: Type.STRING }
-              },
-              required: ["id", "question", "type", "correct_answer", "explanation", "options"]
-            }
+  const response = await withRetry(() => callGeminiApi('generateExam', [{ role: 'user', parts: [{ text: examPrompt }] }], {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        questions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.INTEGER },
+              question: { type: Type.STRING },
+              type: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+              correct_answer: { type: Type.STRING },
+              explanation: { type: Type.STRING }
+            },
+            required: ["id", "question", "type", "correct_answer", "explanation", "options"]
           }
-        },
-        required: ["questions"]
-      }
+        }
+      },
+      required: ["questions"]
     }
   }));
 
@@ -277,30 +308,26 @@ export const generateMCQBatch = async (
     - Proporciona una explicación pedagógica dirigida al estudiante del porqué es correcta.
   `;
 
-  const response = await withRetry(() => ai.models.generateContent({
-    model: 'gemini-3.6-flash',
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          questions: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                question: { type: Type.STRING },
-                options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                correct: { type: Type.STRING },
-                explanation: { type: Type.STRING }
-              },
-              required: ["question", "options", "correct", "explanation"]
-            }
+  const response = await withRetry(() => callGeminiApi('generateMCQBatch', [{ role: 'user', parts: [{ text: prompt }] }], {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        questions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              question: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+              correct: { type: Type.STRING },
+              explanation: { type: Type.STRING }
+            },
+            required: ["question", "options", "correct", "explanation"]
           }
-        },
-        required: ["questions"]
-      }
+        }
+      },
+      required: ["questions"]
     }
   }));
 
@@ -337,35 +364,31 @@ export const generateQuestionBank = async (subject: string, topic: string) => {
   - Si la materia es analítica (Matemáticas, Programación, etc.), incluye preguntas de razonamiento, depuración de código o resolución de problemas.
   JSON questions[{id, type, question, options[], correct_answer, acceptable_answers[], explanation}]`;
 
-  const response = await ai.models.generateContent({
-    model: 'gemini-3.6-flash', // Downgraded from Pro to Flash
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          questions: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                id: { type: Type.STRING },
-                type: { type: Type.STRING },
-                question: { type: Type.STRING },
-                options: { type: Type.ARRAY, items: { type: Type.STRING } },
-                correct_answer: { type: Type.STRING },
-                acceptable_answers: { type: Type.ARRAY, items: { type: Type.STRING } },
-                explanation: { type: Type.STRING }
-              },
-              required: ["id", "type", "question", "correct_answer", "explanation"]
-            }
+  const response = await withRetry(() => callGeminiApi('generateQuestionBank', [{ role: 'user', parts: [{ text: prompt }] }], {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        questions: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              id: { type: Type.STRING },
+              type: { type: Type.STRING },
+              question: { type: Type.STRING },
+              options: { type: Type.ARRAY, items: { type: Type.STRING } },
+              correct_answer: { type: Type.STRING },
+              acceptable_answers: { type: Type.ARRAY, items: { type: Type.STRING } },
+              explanation: { type: Type.STRING }
+            },
+            required: ["id", "type", "question", "correct_answer", "explanation"]
           }
-        },
-        required: ["questions"]
-      }
+        }
+      },
+      required: ["questions"]
     }
-  });
+  }));
 
   try {
     const text = response.text || '';
@@ -437,22 +460,18 @@ export const validateOpenAnswer = async (question: string, acceptableAnswers: st
   }`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.6-flash',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: { 
-        temperature: 0.1,
-        responseMimeType: "application/json",
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            es_correcta: { type: Type.BOOLEAN },
-            score: { type: Type.NUMBER },
-            status: { type: Type.STRING },
-            explicacion: { type: Type.STRING }
-          },
-          required: ["es_correcta", "score", "status", "explicacion"]
-        }
+    const response = await callGeminiApi('validateOpenAnswer', [{ role: 'user', parts: [{ text: prompt }] }], { 
+      temperature: 0.1,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.OBJECT,
+        properties: {
+          es_correcta: { type: Type.BOOLEAN },
+          score: { type: Type.NUMBER },
+          status: { type: Type.STRING },
+          explicacion: { type: Type.STRING }
+        },
+        required: ["es_correcta", "score", "status", "explicacion"]
       }
     });
     const cleaned = cleanJsonResponse(response.text || '');
