@@ -1,0 +1,55 @@
+
+================================================================================
+          DOCUMENTACIÓN MAESTRA INTEGRAL - BUENSOFT EDUCATION
+================================================================================
+Versión: 1.6.6
+Fecha: 2025
+Tecnologías: React, Supabase (PostgreSQL), Gemini 3 Flash API, Tailwind CSS.
+
+1. RESUMEN DEL SISTEMA
+--------------------------------------------------------------------------------
+Buensoft Education es un LMS inteligente que utiliza IA para guiar el 
+aprendizaje. Incluye un sistema de gamificación monetaria donde los puntos 
+académicos se convierten en MXN mediante un banco virtual centralizado.
+
+2. ESTRUCTURA DE DATOS BANCARIOS (NUEVO)
+--------------------------------------------------------------------------------
+TABLA: accounts (Saldos)
+- owner_id (TEXT, PK): UUID o Username del propietario.
+- balance (NUMERIC): Saldo disponible.
+- updated_at (TIMESTAMPTZ): Última actualización de saldo.
+
+TABLA: transactions (Historial)
+- id (BIGINT, PK): ID único.
+- from_account (TEXT): Origen de los fondos.
+- to_account (TEXT): Destino de los fondos.
+- amount (NUMERIC): Monto transferido.
+- concept (TEXT): Motivo de la transferencia.
+- created_at (TIMESTAMPTZ): Fecha de la operación.
+
+3. FLUJO DE TRANSFERENCIA DE CRÉDITOS
+--------------------------------------------------------------------------------
+1. El estudiante acumula puntos (estrellas) según su nota (0-10).
+2. El sistema detecta "Créditos Transferibles" (Lecciones aprobadas no pagadas).
+3. Mediante el RPC 'transferir_creditos_estudiante', se realiza una operación 
+   atómica en la BD:
+   - Se crea el registro de transacción.
+   - Se resta del balance del Admin (e019bef4-4b23-4e92-8227-61bf3bc8e04f).
+   - Se suma al balance del Estudiante.
+   - Se marcan las lecciones como 'credits_transfered = true'.
+
+4. DICCIONARIO DE LECCIONES
+--------------------------------------------------------------------------------
+TABLA: lessons
+- id (BIGINT, PK)
+- student_username (TEXT, FK)
+- subject (TEXT)
+- topic (TEXT)
+- duration_minutes (INTEGER)
+- completed (BOOLEAN)
+- date (DATE)
+- grade (INTEGER): 0-10 (equivale a créditos ganados).
+- credits_transfered (BOOLEAN): Estado de pago en el banco.
+- lesson_status (ENUM): Pendiente, En Progreso, Aprobada, Reprobada, Completada.
+
+================================================================================

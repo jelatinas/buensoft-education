@@ -1,0 +1,7 @@
+{
+  "name": "Buensoft Education",
+  "description": "A comprehensive learning management system for kids featuring AI-guided lessons with Gemini.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
