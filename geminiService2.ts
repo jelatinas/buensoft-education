@@ -126,17 +126,19 @@ FORMATO OBLIGATORIO:
         prompt = `El estudiante ha completado todos los temas pero necesita seguir practicando para cumplir el tiempo de estudio. 
 Hazle una pregunta de repaso al azar sobre cualquier tema de la materia.
 Instrucciones: ${feedbackContext 
-  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale el feedback y formula UNA NUEVA pregunta (alternando entre Opción Múltiple o Abierta).`
+  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal para cimentar su conocimiento, y formula UNA NUEVA pregunta.`
   : `Haz UNA pregunta de repaso al azar.`}
-FORMATO: 
+IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
+FORMATO OBLIGATORIO: 
 [EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      }
   } else if (currentTopic) {
      prompt = `Tema actual (${topicIndex + 1}/10): "${currentTopic.titulo}: ${currentTopic.contenido}".
 Instrucciones: ${feedbackContext 
-  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale el feedback y formula UNA NUEVA pregunta (alternando entre Opción Múltiple o Abierta) sobre el mismo tema actual.`
-  : `Explica de forma concisa este tema. INCLUYE SIEMPRE un ejemplo práctico de la vida diaria sobre el tema. Al final, haz UNA (1) sola pregunta (alternando entre Opción Múltiple o Abierta) para validar la comprensión.`}
+  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que consolide lo aprendido, y formula UNA NUEVA pregunta sobre el tema actual.`
+  : `INSTRUCCIÓN VITAL: Da una explicación introductoria MUY BREVE de este tema Y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA (concreto y fácil de entender). Después del ejemplo, haz UNA (1) sola pregunta para validar su comprensión.`}
+IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
 FORMATO OBLIGATORIO:
 [EXPLICACION] <Tu explicación/feedback aquí> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
