@@ -130,10 +130,16 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     // Inactivity listener
     const resetInactivity = () => {
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
-      if (!isPaused && !showExam) {
+      
+      if (isPaused && document.visibilityState === 'visible') {
+         setIsPaused(false);
+      }
+      
+      if (!showExam) {
         inactivityTimerRef.current = setTimeout(() => {
           setIsPaused(true);
-        }, 60000); // 1 minute of inactivity -> pause
+          setSecondsElapsed(prev => Math.max(0, prev - 180));
+        }, 180000); // 3 minutes of inactivity -> pause
       }
     };
     
