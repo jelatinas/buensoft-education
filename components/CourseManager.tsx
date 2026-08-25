@@ -67,6 +67,14 @@ const CourseManager: React.FC = () => {
     }
   };
 
+  const handleEditCourse = async (id: string | number, currentName: string) => {
+    const newName = prompt('Editar nombre del curso:', currentName);
+    if (newName && newName !== currentName) {
+      await updateCourse(id, newName);
+      loadCourses();
+    }
+  };
+
   const handleDeleteCourse = async (id: string | number) => {
     if (confirm('¿Eliminar curso y todo su contenido?')) {
       await deleteCourse(id);
@@ -173,7 +181,10 @@ const CourseManager: React.FC = () => {
                 {expandedCourse === course.id ? <ChevronDown size={24} className="text-indigo-600" /> : <ChevronRight size={24} className="text-indigo-600" />}
                 <h3 className="font-black text-lg text-indigo-900 dark:text-indigo-200">{course.nombre}</h3>
               </div>
-              <button onClick={() => handleDeleteCourse(course.id)} className="text-red-500 p-2 hover:bg-red-50 rounded-xl"><Trash2 size={18} /></button>
+              <div className="flex gap-2">
+                <button onClick={() => handleEditCourse(course.id, course.nombre)} className="text-indigo-500 p-2 hover:bg-indigo-50 rounded-xl" title="Editar Nombre"><Edit size={18} /></button>
+                <button onClick={() => handleDeleteCourse(course.id)} className="text-red-500 p-2 hover:bg-red-50 rounded-xl" title="Eliminar Curso"><Trash2 size={18} /></button>
+              </div>
             </div>
 
             {expandedCourse === course.id && (
