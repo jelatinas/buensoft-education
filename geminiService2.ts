@@ -129,7 +129,7 @@ Instrucciones: ${feedbackContext
   ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal para cimentar su conocimiento, y formula UNA NUEVA pregunta.`
   : `Haz UNA pregunta de repaso al azar.`}
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
-FORMATO OBLIGATORIO: 
+FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves): 
 [EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      }
@@ -149,7 +149,7 @@ INSTRUCCIÓN VITAL:
 4. Después del ejemplo, haz UNA (1) sola pregunta para validar su comprensión.
 
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
-FORMATO OBLIGATORIO:
+FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 [EXPLICACION] <Lista de temas, explicación y ejemplo aquí> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      } else {
@@ -163,7 +163,7 @@ Si seguimos en el MISMO tema, solo da el feedback y continúa.`
 
 Finalmente, haz UNA (1) sola pregunta para validar su comprensión.
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
-FORMATO OBLIGATORIO:
+FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 [EXPLICACION] <Tu explicación/feedback y ejemplo aquí> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      }

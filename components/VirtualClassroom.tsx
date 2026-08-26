@@ -330,7 +330,11 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const lastModelMessage = currentMessages.filter(m => m.role === 'model' && !m.isError && !m.isStreaming).pop();
     let lastQuestion = "";
     if (lastModelMessage) {
-      const match = lastModelMessage.parts[0].text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+      let match = lastModelMessage.parts[0].text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+      if (!match) {
+        const fallback = lastModelMessage.parts[0].text.match(/(\{[\s\S]*?\})\s*\[\/DATA_LOGICA\]/);
+        if (fallback) match = [fallback[0], fallback[1]];
+      }
       if (match) {
         try {
           const data = JSON.parse(match[1]);
@@ -610,11 +614,22 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
     const text = msg.parts[0].text;
     const expMatch = text.match(/\[EXPLICACION\]([\s\S]*?)\[\/EXPLICACION\]/);
-    const dataMatch = text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+    let dataMatch = text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+    
+    if (!dataMatch) {
+      const fallbackMatch = text.match(/(\{[\s\S]*?\})\s*\[\/DATA_LOGICA\]/);
+      if (fallbackMatch) {
+        dataMatch = [fallbackMatch[0], fallbackMatch[1]];
+      }
+    }
     
     let explanation = expMatch ? expMatch[1].trim() : text;
     explanation = explanation
       .replace(/\[DATA_LOGICA\][\s\S]*?\[\/DATA_LOGICA\]/g, '')
+      .replace(/\{[\s\S]*?\}\s*\[\/DATA_LOGICA\]/g, '')
+      .replace(/\[\/DATA_LOGICA\]`?/g, '')
+      .replace(/\*\*Draft\*\*/g, '')
+      .replace(/\*\*Draft/g, '')
       .replace(/\[EXPLICACION\]|\[\/EXPLICACION\]|\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
       .replace(/\[TEMAS_COMPLETADOS:\s*\d+\]/ig, '')
       .trim();
