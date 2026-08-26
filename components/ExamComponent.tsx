@@ -910,7 +910,6 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
             </div>
           </div>
         )}
-        )}
       </div>
       </div>
 
