@@ -761,7 +761,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                  onKeyDown={(e) => e.key === 'Enter' && handleSend()}
                  disabled={isLoading || isPaused || showExam}
                  placeholder="Escribe tu respuesta..."
-                 className="flex-1 px-6 py-4 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 font-bold outline-none focus:border-indigo-500 disabled:opacity-50"
+                 className="flex-1 px-6 py-4 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold outline-none focus:border-indigo-500 disabled:opacity-50"
                />
                <button 
                  onClick={() => handleSend()}

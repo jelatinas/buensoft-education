@@ -766,7 +766,7 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
       </div>
 
       <div className="bg-white dark:bg-indigo-950 p-8 rounded-[2.5rem] border-4 border-indigo-50 dark:border-indigo-800 shadow-xl">
-        <div className="prose dark:prose-invert max-w-none mb-8">
+        <div className="prose dark:prose-invert max-w-none text-indigo-900 dark:text-white mb-8">
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]}>
             {currentQuestion.pregunta}
           </ReactMarkdown>
