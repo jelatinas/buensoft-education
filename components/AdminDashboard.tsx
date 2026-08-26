@@ -14,7 +14,7 @@ import {
   saveSubjectGuide,
   updateSubjectGuide,
   deleteSubjectGuide,
-  deleteLessonsBySubjectAndDays,
+  deleteSubjectFromStudent,
   updateLessonsPromptByCriteria,
   getAccountBalance,
   getAllTransactions,
@@ -346,10 +346,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
   const handleDynamicRemoval = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!remStudent || !remSubject) return;
-    if (!confirm(`¿Estás seguro de eliminar "${remSubject}" para ${remStudent}?`)) return;
+    if (!confirm(`¿Estás seguro de eliminar "${remSubject}" de todo el calendario para ${remStudent}?`)) return;
     setIsLoading(true);
     try {
-      await deleteLessonsBySubjectAndDays(remStudent, remSubject, remDays, remStartDate);
+      await deleteSubjectFromStudent(remStudent, remSubject);
       alert("Lecciones eliminadas correctamente.");
       if (selectedStudent === remStudent) refreshStudentLessons();
     } catch (err) { alert("Error al eliminar."); } finally { setIsLoading(false); }
@@ -633,28 +633,9 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="flex flex-col space-y-1">
-                <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Eliminar a partir de:</label>
-                <input type="date" value={remStartDate} onChange={e => setRemStartDate(e.target.value)} className="w-full p-4 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold" required />
-              </div>
-              <div className="flex flex-col space-y-1">
-                <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Días a aplicar</label>
-                <div className="flex justify-between bg-indigo-50 dark:bg-indigo-950 p-3 rounded-2xl">
-                  {dayNamesShort.map((day, idx) => (
-                    <button key={idx} type="button" onClick={() => {
-                      const newDays = [...remDays];
-                      newDays[idx] = !newDays[idx];
-                      setRemDays(newDays);
-                    }} className={`w-8 h-8 rounded-full text-[10px] font-black transition-all ${remDays[idx] ? 'bg-red-600 text-white' : 'bg-white dark:bg-indigo-800 text-indigo-300'}`}>
-                      {day}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </div>
 
-            <button type="submit" disabled={isLoading} className="w-full bg-red-600 text-white font-black py-5 rounded-[2rem] shadow-xl uppercase tracking-widest disabled:opacity-50">
+            <button type="submit" disabled={isLoading} className="w-full bg-red-600 text-white font-black py-5 rounded-[2rem] shadow-xl uppercase tracking-widest disabled:opacity-50 mt-6">
               {isLoading ? 'Eliminando...' : 'Eliminar Lecciones Seleccionadas 🗑️'}
             </button>
           </form>

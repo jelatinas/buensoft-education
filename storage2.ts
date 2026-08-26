@@ -382,6 +382,11 @@ export const deleteLessonsBySubjectAndDays = async (studentUsername: string, sub
   }
 };
 
+export const deleteSubjectFromStudent = async (studentUsername: string, subject: string) => {
+  const { error } = await supabase.from('student_lessons').delete().eq('student_username', studentUsername).eq('subject', subject);
+  if (error) console.error("Error deleting subject", error);
+};
+
 export const updateLessonsPromptByCriteria = async (studentUsername: string, subject: string, days: boolean[], startDate: string, newPrompt: string) => {
   const { data, error } = await supabase.from('student_lessons').select('id, date').eq('student_username', studentUsername).eq('subject', subject).gte('date', startDate);
   if (error || !data) return;
