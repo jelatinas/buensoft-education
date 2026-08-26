@@ -7,6 +7,8 @@
   --font-fredoka: "Fredoka", sans-serif;
 }
 
+@custom-variant dark (&:is(.dark *));
+
 .theme-bosque {
   --color-indigo-50: var(--color-emerald-50);
   --color-indigo-100: var(--color-emerald-100);
