@@ -223,7 +223,7 @@ const App: React.FC = () => {
     <div className="min-h-screen bg-sky-50 dark:bg-indigo-950 transition-colors duration-300">
       <nav className="bg-white/80 dark:bg-indigo-900/80 backdrop-blur-md shadow-md p-4 flex justify-between items-center sticky top-0 z-[100] border-b dark:border-indigo-800 transition-colors duration-300">
         <div className="flex items-center space-x-3">
-          <img src="https://buensoft.com/assets/Buensoft_Education_Logo.png" alt="Logo" className="w-10 h-10 md:w-12 md:h-12 object-contain rounded-lg shadow-sm" />
+          <img src="/icon.png" alt="Logo" className="w-10 h-10 md:w-12 md:h-12 object-contain rounded-lg shadow-sm" />
           <div className="flex flex-col hidden sm:flex">
             <h1 className="text-lg md:text-xl font-black text-indigo-900 dark:text-white uppercase tracking-tight leading-tight">Buensoft Education</h1>
             <span className="text-[10px] font-black text-indigo-400 dark:text-indigo-500 tracking-widest uppercase">v{pkg.version}</span>

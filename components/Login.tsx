@@ -47,7 +47,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       <div className="bg-white dark:bg-indigo-900 p-8 md:p-12 rounded-[3rem] shadow-2xl w-full max-w-md border-8 border-indigo-50 dark:border-indigo-800">
         <div className="text-center mb-10">
           <div className="w-24 h-24 md:w-32 md:h-32 mx-auto mb-2 transform hover:rotate-3 transition-transform">
-            <img src="https://buensoft.com/assets/Buensoft_Education_Logo.png" alt="Buensoft Education Logo" className="w-full h-full object-contain" />
+            <img src="/icon.png" alt="Buensoft Education Logo" className="w-full h-full object-contain" />
           </div>
           <p className="text-[10px] font-black text-indigo-300 dark:text-indigo-500 mb-6 uppercase tracking-widest">v{pkg.version}</p>
           <h2 className="text-4xl font-black text-indigo-900 dark:text-white uppercase tracking-tight mb-2">Bienvenido</h2>
