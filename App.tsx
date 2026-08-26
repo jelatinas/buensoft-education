@@ -6,13 +6,18 @@ import { supabase } from './supabaseClient.ts';
 import Login from './components/Login.tsx';
 import AdminDashboard from './components/AdminDashboard.tsx';
 import StudentDashboard from './components/StudentDashboard.tsx';
-import { Lock, Sun, Moon, LogOut, Wallet, BookOpen, UserCircle2, Settings, Shield, GraduationCap, Coins } from 'lucide-react';
+import { Lock, Sun, Moon, LogOut, Wallet, BookOpen, UserCircle2, Settings, Shield, GraduationCap, Coins, Palette } from 'lucide-react';
 import pkg from './package.json';
 
 const App: React.FC = () => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
-  const [darkMode, setDarkMode] = useState(() => localStorage.getItem('theme') === 'dark');
+  const [theme, setTheme] = useState<'claro' | 'oscuro' | 'bosque'>(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'dark') return 'oscuro';
+    if (saved === 'light') return 'claro';
+    return (saved as 'claro' | 'oscuro' | 'bosque') || 'claro';
+  });
   const [totalBalance, setTotalBalance] = useState(0);
 
   const [tabSessionId] = useState(() => Math.random().toString(36).substring(2, 15));
@@ -130,14 +135,14 @@ const App: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    if (darkMode) {
+    localStorage.setItem('theme', theme);
+    document.documentElement.classList.remove('dark', 'theme-bosque');
+    if (theme === 'oscuro') {
       document.documentElement.classList.add('dark');
-      localStorage.setItem('theme', 'dark');
-    } else {
-      document.documentElement.classList.remove('dark');
-      localStorage.setItem('theme', 'light');
+    } else if (theme === 'bosque') {
+      document.documentElement.classList.add('theme-bosque');
     }
-  }, [darkMode]);
+  }, [theme]);
 
   const handleLogin = async (user: User) => {
     setCurrentUser(user);
@@ -241,12 +246,29 @@ const App: React.FC = () => {
             </button>
           </div>
           
-          <button 
-            onClick={() => setDarkMode(!darkMode)}
-            className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-800 text-indigo-600 dark:text-indigo-200 transition-all"
-          >
-            {darkMode ? <Sun size={20} /> : <Moon size={20} />}
-          </button>
+          <div className="flex bg-indigo-50 dark:bg-indigo-900/50 p-1 rounded-xl items-center space-x-1">
+            <button 
+              onClick={() => setTheme('claro')}
+              className={`p-1.5 rounded-lg transition-all ${theme === 'claro' ? 'bg-white shadow-sm text-sky-500' : 'text-indigo-400 hover:text-indigo-600'}`}
+              title="Claro"
+            >
+              <Sun size={16} />
+            </button>
+            <button 
+              onClick={() => setTheme('oscuro')}
+              className={`p-1.5 rounded-lg transition-all ${theme === 'oscuro' ? 'bg-indigo-800 shadow-sm text-sky-200' : 'text-indigo-400 hover:text-indigo-600'}`}
+              title="Oscuro"
+            >
+              <Moon size={16} />
+            </button>
+            <button 
+              onClick={() => setTheme('bosque')}
+              className={`p-1.5 rounded-lg transition-all ${theme === 'bosque' ? 'bg-emerald-100 shadow-sm text-emerald-600' : 'text-indigo-400 hover:text-indigo-600'}`}
+              title="Bosque"
+            >
+              <Palette size={16} />
+            </button>
+          </div>
 
           {currentUser.role === Role.STUDENT && (
             <div className="flex items-center space-x-2 bg-amber-50 dark:bg-amber-900/30 px-3 py-2 rounded-xl border border-amber-100 dark:border-amber-800">
