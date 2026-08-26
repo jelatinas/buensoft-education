@@ -678,7 +678,7 @@ export const createIntentoExamen = async (estudianteId: string, classId: string 
 };
 
 export const saveRespuestaEstudiante = async (respuesta: Partial<RespuestaEstudiante>) => {
-  const { score, ...rest } = respuesta;
+  const { ...rest } = respuesta;
   const intentoIdStr = String(respuesta.intento_id);
   const preguntaIdStr = String(respuesta.pregunta_id);
   
@@ -695,7 +695,7 @@ export const saveRespuestasEstudianteBatch = async (respuestas: Partial<Respuest
   if (respuestas.length === 0) return;
   
   const processed = respuestas.map(r => {
-    const { score, ...rest } = r;
+    const { id, ...rest } = r;
     return {
       ...rest,
       intento_id: String(r.intento_id),
@@ -778,26 +778,38 @@ export const updateRespuestaEstudiante = async (id: string | number, update: Par
 };
 
 export const getIntentoDetails = async (intentoId: string | number) => {
-  const { data, error } = await supabase
+  const { data: respuestas, error } = await supabase
     .from('respuestas_estudiante')
-    .select(`
-      id,
-      respuesta,
-      es_correcta,
-      score,
-      preguntas (
-        pregunta,
-        respuesta_correcta,
-        explicacion
-      )
-    `)
+    .select('*')
     .eq('intento_id', String(intentoId));
   
-  if (error) {
+  if (error || !respuestas) {
     console.error("Error fetching intento details:", error);
     return [];
   }
-  return data || [];
+
+  const preguntaIds = respuestas.map(r => r.pregunta_id).filter(Boolean);
+  if (preguntaIds.length === 0) return respuestas;
+
+  const { data: preguntas, error: pError } = await supabase
+    .from('class_exam_questions')
+    .select('id, tipo, pregunta, respuesta_correcta, explicacion')
+    .in('id', preguntaIds);
+
+  if (pError) {
+    console.error("Error fetching preguntas for intento:", pError);
+    return respuestas;
+  }
+
+  const pMap = new Map(preguntas?.map(p => [String(p.id), p]));
+  
+  return respuestas.map(r => ({
+    id: r.id,
+    respuesta: r.respuesta,
+    es_correcta: r.es_correcta,
+    score: r.score,
+    preguntas: pMap.get(String(r.pregunta_id)) || null
+  }));
 };
 
 export const getClassIdFromLesson = async (lesson: Lesson): Promise<string | null> => {
@@ -901,21 +913,19 @@ export const getAuditStatusesBulk = async (studentId: string, studentUsername: s
     const validClassIds = resolvedIds.filter((id): id is string => id !== null);
     if (validClassIds.length === 0) return {};
 
-    // 2. Fetch all class_chat_history for these IDs and student
+    // 2. Fetch all class_chat_history for this student
     const { data: geminiLessons } = await supabase
       .from('class_chat_history')
-      .select('lesson_id')
-      .in('lesson_id', validClassIds)
-      .eq('student_username', studentUsername);
+      .select('class_id')
+      .eq('estudiante_id', studentId);
 
-    // 3. Fetch all intentos_examen for these IDs and student
+    // 3. Fetch all intentos_examen for this student
     const { data: intentos } = await supabase
       .from('intentos_examen')
       .select('class_id')
-      .in('class_id', validClassIds)
       .eq('estudiante_id', studentId);
 
-    const geminiSet = new Set(geminiLessons?.map(gl => String(gl.lesson_id)) || []);
+    const geminiSet = new Set(geminiLessons?.map(gl => String(gl.class_id)) || []);
     const intentosSet = new Set(intentos?.map(i => String(i.class_id)) || []);
 
     const results: Record<string, { hasGeminiLesson: boolean, hasExamAttempts: boolean }> = {};
@@ -928,11 +938,11 @@ export const getAuditStatusesBulk = async (studentId: string, studentUsername: s
           hasExamAttempts: intentosSet.has(String(classId))
         };
       } else {
-        statuses[String(lesson.id)] = { hasGeminiLesson: false, hasExamAttempts: false };
+        results[String(lesson.id)] = { hasGeminiLesson: false, hasExamAttempts: false };
       }
     });
 
-    return statuses;
+    return results;
   } catch (err) {
     console.error("Error global en getAuditStatusesBulk:", err);
     return {};
@@ -1066,3 +1076,14 @@ export const getIntentosExamen = async (estudianteId: string, classId: string | 
   return [];
 };
 
+
+export const getCachedEvaluation = async (question: string, studentAnswer: string) => {
+  const { data, error } = await supabase.from('cached_evaluations').select('*').eq('question_text', question).eq('student_answer', studentAnswer).maybeSingle();
+  if (error) console.error('Error fetching cached eval:', error);
+  return data;
+};
+
+export const saveEvaluationToCache = async (question: string, studentAnswer: string, isCorrect: boolean, feedback: string) => {
+  const { error } = await supabase.from('cached_evaluations').insert({ question_text: question, student_answer: studentAnswer, is_correct: isCorrect, feedback });
+  if (error) console.error('Error saving cached eval:', error);
+};

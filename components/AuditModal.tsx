@@ -85,7 +85,7 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
             className={`flex-1 py-3 rounded-2xl font-black text-xs uppercase transition-all flex items-center justify-center gap-2 ${activeTab === 'leccion' ? 'bg-white dark:bg-indigo-800 text-indigo-600 shadow-sm' : 'text-indigo-400'}`}
           >
             <BookOpen className="w-4 h-4" />
-            Lección
+            Clase
           </button>
           <button 
             onClick={() => setActiveTab('examen')}
@@ -106,7 +106,7 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
               {activeTab === 'leccion' && (
                 <div className="w-full">
                   <VirtualClassroom 
-                    lesson={lesson}
+                    lesson={{ ...lesson, chatHistory: lessonHistory && lessonHistory.chat_history ? (typeof lessonHistory.chat_history === 'string' ? JSON.parse(lessonHistory.chat_history) : lessonHistory.chat_history) : [] }}
                     user={{ id: studentId, username: studentUsername, role: Role.STUDENT }}
                     onClose={() => {}}
                     isAdminAudit={true}
@@ -135,35 +135,25 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
                       </div>
 
                       <div className="bg-white dark:bg-indigo-900 rounded-[2rem] shadow-sm border-2 border-indigo-50 dark:border-indigo-800 overflow-hidden">
-                        <table className="w-full text-left border-collapse">
-                          <thead>
-                            <tr className="bg-indigo-50 dark:bg-indigo-950">
-                              <th className="p-4 text-[10px] font-black text-indigo-400 uppercase tracking-widest border-b border-indigo-100 dark:border-indigo-800">Pregunta</th>
-                              <th className="p-4 text-[10px] font-black text-indigo-400 uppercase tracking-widest border-b border-indigo-100 dark:border-indigo-800">Respuesta del Estudiante</th>
-                              <th className="p-4 text-[10px] font-black text-indigo-400 uppercase tracking-widest border-b border-indigo-100 dark:border-indigo-800 text-center">Resultado</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {intentoDetails.map((det) => {
-                              const res = getResultLabel(det.score || 0, !!det.es_correcta);
-                              return (
-                                <tr key={det.id} className="border-b border-indigo-50 dark:border-indigo-800 last:border-0">
-                                  <td className="p-4 text-xs font-bold text-indigo-900 dark:text-white max-w-xs">
-                                    {det.preguntas?.pregunta}
-                                  </td>
-                                  <td className="p-4 text-xs font-medium text-indigo-600 dark:text-indigo-300 italic">
-                                    "{det.respuesta}"
-                                  </td>
-                                  <td className="p-4 text-center">
-                                    <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase tracking-tighter ${res.color}`}>
-                                      {res.label}
-                                    </span>
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                         <div className="space-y-4">
+                          {intentoDetails.map((det, idx) => {
+                            const res = getResultLabel(det.score || 0, !!det.es_correcta);
+                            return (
+                              <div key={det.id} className="bg-indigo-50 dark:bg-indigo-950 p-4 rounded-xl border border-indigo-100 dark:border-indigo-800">
+                                <div className="flex items-start gap-2 mb-2">
+                                  <span className="bg-indigo-200 text-indigo-800 dark:bg-indigo-800 dark:text-indigo-200 text-[9px] font-black uppercase px-2 py-1 rounded mt-0.5 whitespace-nowrap">
+                                    {det.preguntas?.tipo === 'multiple_choice' ? 'Opción Múltiple' : det.preguntas?.tipo === 'true_false' ? 'Falso/Verdadero' : det.preguntas?.tipo === 'open' ? 'Abierta' : 'Desconocido'}
+                                  </span>
+                                  <h4 className="text-sm font-black text-indigo-900 dark:text-white">{idx + 1}. {det.preguntas?.pregunta || 'Pregunta no disponible'}</h4>
+                                </div>
+                                <p className="text-xs text-indigo-600 dark:text-indigo-300 italic mb-3">Respuesta: "{det.respuesta}"</p>
+                                <span className={`inline-block px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-tighter ${res.color}`}>
+                                  {res.label}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
 
                       {selectedIntento && (

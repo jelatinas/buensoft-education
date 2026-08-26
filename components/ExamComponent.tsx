@@ -414,7 +414,8 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
         respuestasParaGuardar.push({
           pregunta_id: q.id,
           respuesta: answers[String(q.id)] || "[SIN RESPUESTA]",
-          es_correcta: score >= 1
+          es_correcta: score >= 1,
+          score: score
         });
       }
       

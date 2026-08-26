@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ChatMessage, Lesson, Microtema, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante } from "./types";
+import { getCachedEvaluation, saveEvaluationToCache } from "./storage2";
 
 export function shuffleOptions<T>(array: T[]): T[] {
   if (!Array.isArray(array)) return [];
@@ -107,12 +108,10 @@ export const generateTeacherResponse = async (
 ) => {
   const ai = getAIInstance();
   
-  const systemInstruction = `
-    ROL: Profesor experto y empático. Enfócate en dar explicaciones claras, directas y objetivas. NO exageres con elogios ni alabanzas (evita decir "¡Excelente trabajo!", "¡Eres un genio!", etc.), mantén un tono profesional. Usa emojis moderadamente.
-    MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}".
-    ${lesson.learningPrompt ? `INSTRUCCIONES ESPECÍFICAS PARA ESTE CURSO (Obligatorias, adáptate a ellas SIN olvidar tu rol de profesor): "${lesson.learningPrompt}"` : ''}
-    ESTUDIANTE: ${studentName}.
-  `;
+  const systemInstruction = `ROL:Profesor experto. Explicaciones claras, directas, objetivas. NO exageres con elogios(evita "¡Excelente trabajo!"), mantén tono profesional. Usa emojis moderadamente.
+MATERIA:${lesson.subject}. TEMA:${lesson.title}.
+${lesson.learningPrompt ? `INSTRUCCIONES EXTRA:"${lesson.learningPrompt}"` : ''}
+ESTUDIANTE:${studentName}.`;
 
   let prompt = "";
   // Check if we hit the limit for resume interactions (assume feedbackContext contains a signal or we pass a flag)
@@ -182,7 +181,7 @@ FORMATO OBLIGATORIO:
       const result = await ai.models.generateContentStream({
         model: 'gemini-3.6-flash',
         contents,
-        config: { systemInstruction }
+        config: { systemInstruction, maxOutputTokens: 350 }
       });
       for await (const chunk of result) {
         const chunkText = chunk.text || '';
@@ -190,7 +189,7 @@ FORMATO OBLIGATORIO:
         if (onChunk && chunkText) onChunk(fullText);
       }
     } else {
-      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction });
+      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction, maxOutputTokens: 350 });
       fullText = response.text || '';
       // Simulate streaming for production proxy
       for (let i = 0; i < fullText.length; i += 6) {
@@ -210,6 +209,11 @@ export const evaluateStudentAnswer = async (
   studentAnswer: string,
   lastQuestion: string
 ) => {
+  const cached = await getCachedEvaluation(lastQuestion, studentAnswer);
+  if (cached) {
+    return { aprobado: cached.is_correct, retroalimentacion: cached.feedback };
+  }
+
   const ai = getAIInstance();
   
   const prompt = `Pregunta hecha al alumno: "${lastQuestion}"
@@ -231,7 +235,9 @@ Responde obligatoriamente en JSON con este formato: {"aprobado": true/false, "re
   }));
 
   const cleaned = cleanJsonResponse(response.text || '');
-  return JSON.parse(cleaned);
+  const result = JSON.parse(cleaned);
+  await saveEvaluationToCache(lastQuestion, studentAnswer, result.aprobado, result.retroalimentacion);
+  return result;
 };
 
 export const generateExam = async (lessonTitle: string, chatHistory: any[], neededMCQ: number, neededOpen: number, neededTF: number) => {

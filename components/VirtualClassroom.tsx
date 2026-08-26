@@ -521,7 +521,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     setMcqSelections(prev => ({ ...prev, [messageIndex]: { selected: opt, correct: correctAnswer } }));
     
     try {
-      const currentMsgs = messages;
+      const currentMsgs = [...messages];
+      currentMsgs[messageIndex] = { ...currentMsgs[messageIndex], selectedOption: opt, is_correct: isCorrect };
+      setMessages(currentMsgs);
       await generateAndAppendTeacherResponse(opt, currentMsgs, true, isCorrect);
     } catch (err: any) {
       console.error(err);
@@ -625,7 +627,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
 
     const isLastMessage = index === messages.length - 1;
-    const mcqSelection = mcqSelections[index]; // track MCQ answer for this message
+    const mcqSelection = mcqSelections[index] || (msg.selectedOption ? { selected: msg.selectedOption, correct: questionData?.correct || '' } : undefined); // track MCQ answer for this message
     const hasAnsweredMCQ = !!mcqSelection;
 
     // Streaming: show cursor while streaming
