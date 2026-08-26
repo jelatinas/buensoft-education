@@ -346,10 +346,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
   const handleDynamicRemoval = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!remStudent || !remSubject) return;
-    if (!confirm(`¿Estás seguro de eliminar "${remSubject}" de todo el calendario para ${remStudent}?`)) return;
+    if (!confirm(`¿Estás seguro de eliminar "${remSubject}" a partir del ${remStartDate} para ${remStudent}?`)) return;
     setIsLoading(true);
     try {
-      await deleteSubjectFromStudent(remStudent, remSubject);
+      await deleteSubjectFromStudent(remStudent, remSubject, remStartDate);
       alert("Lecciones eliminadas correctamente.");
       if (selectedStudent === remStudent) refreshStudentLessons();
     } catch (err) { alert("Error al eliminar."); } finally { setIsLoading(false); }
@@ -632,7 +632,10 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
                 </select>
               </div>
             </div>
-
+            
+            <div className="flex flex-col space-y-1">
+              <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Eliminar a partir de:</label>
+              <input type="date" value={remStartDate} onChange={e => setRemStartDate(e.target.value)} className="w-full p-4 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold" required />
             </div>
 
             <button type="submit" disabled={isLoading} className="w-full bg-red-600 text-white font-black py-5 rounded-[2rem] shadow-xl uppercase tracking-widest disabled:opacity-50 mt-6">
