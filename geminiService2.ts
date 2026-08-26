@@ -108,10 +108,12 @@ export const generateTeacherResponse = async (
 ) => {
   const ai = getAIInstance();
   
-  const systemInstruction = `ROL:Profesor experto. Explicaciones claras, directas, objetivas. NO exageres con elogios(evita "¡Excelente trabajo!"), mantén tono profesional. Usa emojis moderadamente.
-MATERIA:${lesson.subject}. TEMA:${lesson.title}.
-${lesson.learningPrompt ? `INSTRUCCIONES EXTRA:"${lesson.learningPrompt}"` : ''}
-ESTUDIANTE:${studentName}.`;
+  const systemInstruction = `
+    ROL: Profesor experto y empático. Enfócate en dar explicaciones claras, directas y objetivas. NO exageres con elogios ni alabanzas (evita decir "¡Excelente trabajo!", "¡Eres un genio!", etc.), mantén un tono profesional. Usa emojis moderadamente.
+    MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}".
+    ${lesson.learningPrompt ? `INSTRUCCIONES ESPECÍFICAS PARA ESTE CURSO (Obligatorias, adáptate a ellas SIN olvidar tu rol de profesor): "${lesson.learningPrompt}"` : ''}
+    ESTUDIANTE: ${studentName}.
+  `;
 
   let prompt = "";
   // Check if we hit the limit for resume interactions (assume feedbackContext contains a signal or we pass a flag)
@@ -181,7 +183,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
       const result = await ai.models.generateContentStream({
         model: 'gemini-1.5-flash-latest',
         contents,
-        config: { systemInstruction, maxOutputTokens: 350 }
+        config: { systemInstruction }
       });
       for await (const chunk of result) {
         const chunkText = chunk.text || '';
@@ -189,7 +191,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
         if (onChunk && chunkText) onChunk(fullText);
       }
     } else {
-      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction, maxOutputTokens: 350 });
+      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction });
       fullText = response.text || '';
       // Simulate streaming for production proxy
       for (let i = 0; i < fullText.length; i += 6) {
