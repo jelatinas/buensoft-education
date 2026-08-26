@@ -14,6 +14,7 @@ interface VirtualClassroomProps {
   onClose: () => void;
   onLessonAccredited?: (grade: number) => void;
   isAdminAudit?: boolean;
+  isEmbedded?: boolean;
 }
 
 const MarkdownComponents = {
@@ -45,7 +46,7 @@ const processAIResponse = (rawText: string): string => {
   return aiText;
 };
 
-const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClose, onLessonAccredited, isAdminAudit = false }) => {
+const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClose, onLessonAccredited, isAdminAudit = false, isEmbedded = false }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
@@ -325,14 +326,6 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     let isTopicCompleted = false;
     let teacherContext = "";
 
-    // Increment resume interaction counter EARLY so UI updates immediately
-    let newResumeInteractions = resumeInteractionsRef.current;
-    if (isResumingRef.current && newCompletedTopics >= 10) {
-      newResumeInteractions += 1;
-      setResumeInteractions(newResumeInteractions);
-      resumeInteractionsRef.current = newResumeInteractions;
-    }
-
     // Extract last question for evaluator
     const lastModelMessage = currentMessages.filter(m => m.role === 'model' && !m.isError && !m.isStreaming).pop();
     let lastQuestion = "";
@@ -380,6 +373,21 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       teacherContext = evalResult.retroalimentacion;
     }
 
+    // NEW LOGIC: Bypass time check if 10 topics completed early
+    if (newCompletedTopics >= 10 && !isResumingRef.current) {
+        isResumingRef.current = true;
+        setResumeInteractions(0);
+        resumeInteractionsRef.current = 0;
+    }
+
+    // Increment resume interaction counter EARLY so UI updates immediately
+    let newResumeInteractions = resumeInteractionsRef.current;
+    if (isResumingRef.current && newCompletedTopics >= 10 && mcqIsCorrect !== false && !isTopicCompleted) {
+      newResumeInteractions += 1;
+      setResumeInteractions(newResumeInteractions);
+      resumeInteractionsRef.current = newResumeInteractions;
+    }
+
     if (newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED) {
        teacherContext = "FINAL_REVIEW_INTERACTION";
     }
@@ -393,7 +401,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const isReviewMode = !isTimeMet && newCompletedTopics >= 10;
     const currentTopic = lesson.microtemas?.[newCompletedTopics < 10 ? newCompletedTopics : 9];
 
-    const isReadyForExamNow = (newCompletedTopics >= 10) && (isResumingRef.current ? (newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED) : (isTimeMet && true));
+    const isReadyForExamNow = (newCompletedTopics >= 10) && (newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED);
     
     if (isReadyForExamNow) {
        // FINAL INTERACTION FOR BOTH MCQ AND OPEN
@@ -695,7 +703,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   return (
     <>
-      <div className="fixed inset-0 bg-indigo-50 dark:bg-indigo-950 z-[2000] flex flex-col font-fredoka">
+      <div className={isEmbedded ? "relative w-full h-[65vh] md:h-[75vh] bg-indigo-50 dark:bg-indigo-950 flex flex-col font-fredoka rounded-[2rem] overflow-hidden border-2 border-indigo-100 dark:border-indigo-800 shadow-inner" : "fixed inset-0 bg-indigo-50 dark:bg-indigo-950 z-[2000] flex flex-col font-fredoka"}>
         <header className="bg-indigo-600 text-white p-4 shadow-lg flex justify-between items-center z-10 shrink-0">
         <div className="flex items-center space-x-4">
            <div className="bg-white/20 px-4 py-2 rounded-2xl flex flex-col items-center min-w-[80px]">
@@ -769,10 +777,10 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
       {isPaused && !isAdminAudit && !showExam && (
         <div className="absolute inset-0 bg-indigo-900/60 backdrop-blur-md z-[3000] flex items-center justify-center p-6 text-center">
-          <div className="bg-white p-10 rounded-[3rem] shadow-2xl animate-in zoom-in duration-300 border-8 border-indigo-50">
-             <h3 className="text-2xl font-black text-indigo-900 mb-6 uppercase tracking-tight">Estudio Pausado por Inactividad</h3>
-             <p className="text-indigo-500 font-bold mb-8">El cronómetro se ha detenido. ¿Sigues ahí?</p>
-             <button onClick={() => setIsPaused(false)} className="w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-xl text-xl px-12 uppercase">
+          <div className="bg-white dark:bg-indigo-900 p-10 rounded-[3rem] shadow-2xl animate-in zoom-in duration-300 border-8 border-indigo-50 dark:border-indigo-800">
+             <h3 className="text-2xl font-black text-indigo-900 dark:text-white mb-6 uppercase tracking-tight">Estudio Pausado por Inactividad</h3>
+             <p className="text-indigo-500 dark:text-indigo-200 font-bold mb-8">El cronómetro se ha detenido. ¿Sigues ahí?</p>
+             <button onClick={() => setIsPaused(false)} className="w-full bg-indigo-600 dark:bg-indigo-500 text-white font-black py-4 rounded-2xl shadow-xl text-xl px-12 uppercase">
                Continuar Aprendiendo
              </button>
           </div>

@@ -718,13 +718,15 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
   }
 
   return (
-    <div className="space-y-8 animate-in slide-in-from-right duration-300 select-none">
+    <div className="flex flex-col h-full animate-in slide-in-from-right duration-300 select-none">
       {/* Anti-cheat Warning */}
       {cheatWarning && (
-        <div className="bg-red-600 text-white p-4 rounded-2xl font-black uppercase text-center animate-bounce shadow-2xl border-4 border-white">
+        <div className="bg-red-600 text-white p-4 rounded-2xl font-black uppercase text-center animate-bounce shadow-2xl border-4 border-white shrink-0 mb-4">
           ⚠️ {cheatWarning}
         </div>
       )}
+      
+      <div className="flex-1 overflow-y-auto custom-scrollbar pr-2 pb-4 space-y-8">
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center space-x-4">
           <div className="flex items-center space-x-2">
@@ -908,10 +910,13 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
             </div>
           </div>
         )}
+        )}
+      </div>
       </div>
 
-      <button
-        onClick={handleNext}
+      <div className="shrink-0 pt-4 mt-auto">
+        <button
+          onClick={handleNext}
         disabled={(!answers[String(currentQuestion.id)] && !isShowingFeedback) || isEvaluating}
         className={`w-full py-5 rounded-2xl font-black uppercase shadow-xl transition-all flex items-center justify-center space-x-3 ${
           (!answers[String(currentQuestion.id)] && !isShowingFeedback) || isEvaluating
@@ -935,6 +940,7 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
           </>
         )}
       </button>
+      </div>
     </div>
   );
 };

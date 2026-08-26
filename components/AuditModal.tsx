@@ -3,6 +3,8 @@ import { Lesson, IntentoExamen } from '../types';
 import { getClassChatHistory, getIntentosExamen, getIntentoDetails, getClassIdFromLesson } from '../storage2';
 import ReactMarkdown from 'react-markdown';
 import { BookOpen, FileText } from 'lucide-react';
+import VirtualClassroom from './VirtualClassroom';
+import { Role } from '../types';
 
 interface AuditModalProps {
   lesson: Lesson;
@@ -102,16 +104,14 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
           ) : (
             <>
               {activeTab === 'leccion' && (
-                <div className="prose prose-indigo max-w-none dark:prose-invert">
-                  {lessonHistory ? (
-                    <div className="bg-white dark:bg-indigo-900 p-8 rounded-[2rem] shadow-sm border-2 border-indigo-50 dark:border-indigo-800">
-                      <ReactMarkdown>{lessonHistory.gemini_lesson}</ReactMarkdown>
-                    </div>
-                  ) : (
-                    <div className="text-center py-20 bg-white dark:bg-indigo-900 rounded-[2rem] border-2 border-dashed border-indigo-200">
-                      <p className="text-indigo-400 font-bold uppercase tracking-widest">No hay contenido de lección guardado.</p>
-                    </div>
-                  )}
+                <div className="w-full">
+                  <VirtualClassroom 
+                    lesson={lesson}
+                    user={{ id: studentId, username: studentUsername, role: Role.STUDENT }}
+                    onClose={() => {}}
+                    isAdminAudit={true}
+                    isEmbedded={true}
+                  />
                 </div>
               )}
 

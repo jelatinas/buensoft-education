@@ -9,6 +9,11 @@
 
 @custom-variant dark (&:is(.dark *));
 
+@theme {
+  --color-indigo-950: #0a081c;
+  --color-indigo-900: #141235;
+}
+
 .theme-bosque {
   --color-indigo-50: var(--color-emerald-50);
   --color-indigo-100: var(--color-emerald-100);
