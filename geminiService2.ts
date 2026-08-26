@@ -179,7 +179,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
     if (isLocal) {
       const ai = getAIInstance();
       const result = await ai.models.generateContentStream({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-1.5-flash-latest',
         contents,
         config: { systemInstruction, maxOutputTokens: 350 }
       });
