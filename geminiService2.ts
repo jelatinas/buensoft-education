@@ -135,14 +135,39 @@ FORMATO OBLIGATORIO:
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      }
   } else if (currentTopic) {
-     prompt = `Tema actual (${topicIndex + 1}/10): "${currentTopic.titulo}: ${currentTopic.contenido}".
-Instrucciones: ${feedbackContext 
-  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que consolide lo aprendido, y formula UNA NUEVA pregunta sobre el tema actual.`
-  : `INSTRUCCIÓN VITAL: Da una explicación introductoria MUY BREVE de este tema Y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA (concreto y fácil de entender). Después del ejemplo, haz UNA (1) sola pregunta para validar su comprensión.`}
+     const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\\n') || '';
+     if (topicIndex === 0 && !feedbackContext) {
+        // Primera interacción de la clase
+        prompt = `Esta es la primera interacción de la clase.
+ANTES de explicar el Tema 1, MUESTRA EL LISTADO COMPLETO DE LOS TEMAS que aprenderemos hoy:
+${topicsList}
+
+Luego, presenta el Tema actual (1/10): "${currentTopic.titulo}".
+INSTRUCCIÓN VITAL: 
+1. Pon el título del tema en letras **NEGRITAS**.
+2. Da una explicación introductoria breve y clara.
+3. BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA (fácil de entender).
+4. Después del ejemplo, haz UNA (1) sola pregunta para validar su comprensión.
+
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
 FORMATO OBLIGATORIO:
-[EXPLICACION] <Tu explicación/feedback aquí> [/EXPLICACION]
+[EXPLICACION] <Lista de temas, explicación y ejemplo aquí> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
+     } else {
+        // Interacciones subsecuentes
+        prompt = `Tema actual (${topicIndex + 1}/10): "${currentTopic.titulo}". Contenido de referencia: "${currentTopic.contenido}".
+Instrucciones: ${feedbackContext 
+  ? `El estudiante acaba de responder a una pregunta. Feedback previo: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que consolide lo aprendido (si era el último tema anterior, felicítalo). 
+Luego, si estamos avanzando a un NUEVO tema (el título del tema actual es nuevo para el estudiante), preséntalo obligatoriamente poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA. 
+Si seguimos en el MISMO tema, solo da el feedback y continúa.`
+  : `Presenta el tema actual poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA.`}
+
+Finalmente, haz UNA (1) sola pregunta para validar su comprensión.
+IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
+FORMATO OBLIGATORIO:
+[EXPLICACION] <Tu explicación/feedback y ejemplo aquí> [/EXPLICACION]
+[DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
+     }
   } else {
      prompt = `Has terminado todos los temas. Felicita al estudiante.`;
   }
