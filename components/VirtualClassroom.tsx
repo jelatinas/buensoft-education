@@ -25,10 +25,21 @@ const MarkdownComponents = {
 
 const processAIResponse = (rawText: string): string => {
   let aiText = rawText;
-  const dataMatch = aiText.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+  let dataMatch = aiText.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+  if (!dataMatch) {
+      dataMatch = aiText.match(/\[DATA_LOGICA\]([\s\S]*)$/);
+  }
+  
   if (dataMatch) {
      try {
-        const data = JSON.parse(dataMatch[1].trim());
+        let jsonStr = dataMatch[1].trim();
+        if (jsonStr.startsWith('```json')) jsonStr = jsonStr.replace(/```json|```/g, '').trim();
+        else if (jsonStr.startsWith('```')) jsonStr = jsonStr.replace(/```/g, '').trim();
+        
+        const jsonMatch = jsonStr.match(/(\{[\s\S]*?\})/);
+        if (jsonMatch) jsonStr = jsonMatch[1];
+        
+        const data = JSON.parse(jsonStr);
         if (data.type === 'MCQ' && Array.isArray(data.options)) {
            const shuffled = [...data.options];
            for (let i = shuffled.length - 1; i > 0; i--) {
@@ -36,11 +47,12 @@ const processAIResponse = (rawText: string): string => {
              [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
            }
            data.options = shuffled;
-           const newDataLogica = `[DATA_LOGICA]\n${JSON.stringify(data)}\n[/DATA_LOGICA]`;
-           aiText = aiText.replace(dataMatch[0], newDataLogica);
         }
+        
+        const newDataLogica = `[DATA_LOGICA]\n${JSON.stringify(data)}\n[/DATA_LOGICA]`;
+        aiText = aiText.replace(dataMatch[0], newDataLogica);
      } catch (e) {
-        console.error("Error shuffling options:", e);
+        console.error("Error processing AI response:", e);
      }
   }
   return aiText;
@@ -73,7 +85,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [preloadedMCQs, setPreloadedMCQs] = useState<any[]>([]);
   const [aiProvider, setLocalAiProvider] = useState(getAiProvider());
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
-  const FALLBACK_CHAIN = ['gemini', 'deepseek', 'cerebras'];
+  const FALLBACK_CHAIN = ['gemini', 'openrouter', 'cerebras'];
   const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newProv = e.target.value;
     setLocalAiProvider(newProv);
@@ -298,15 +310,45 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
                const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: 'El profesor está escribiendo...' }], timestamp: new Date().toISOString(), isStreaming: true };
                setMessages([...history, streamingMsg]);
-               const responseText = await generateTeacherResponse(
-                  lesson, user.username, currentTopic,
-                  topicsCount < 10 ? topicsCount : 9, 
-                  isReviewMode, 
-                  "El estudiante acaba de retomar la clase tras una pausa. Dale una breve y entusiasta bienvenida de vuelta y hazle directamente una nueva pregunta sobre este tema para continuar.",
-                  (partial) => {
-                    setMessages([...history, { ...streamingMsg, parts: [{ text: partial }] }]);
+               let responseText = "";
+               let currentProvider = aiProvider;
+               let providerIndex = FALLBACK_CHAIN.indexOf(currentProvider);
+               if (providerIndex === -1) providerIndex = 0;
+               
+               for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
+                  try {
+                    responseText = await generateTeacherResponse(
+                       lesson, user.username, currentTopic,
+                       topicsCount < 10 ? topicsCount : 9, 
+                       isReviewMode, 
+                       "El estudiante acaba de retomar la clase tras una pausa. Dale una breve y entusiasta bienvenida de vuelta y hazle directamente una nueva pregunta sobre este tema para continuar.",
+                       (partial) => {
+                         setMessages(prev => {
+                            const m = [...prev];
+                            if (m.length > 0 && m[m.length-1].isStreaming) {
+                              m[m.length-1] = { ...m[m.length-1], parts: [{ text: partial }] };
+                            }
+                            return m;
+                         });
+                       }
+                    );
+                    break;
+                  } catch (err) {
+                    console.warn(`${currentProvider} failed in resume init, attempting fallback...`, err);
+                    const nextIndex = (providerIndex + 1) % FALLBACK_CHAIN.length;
+                    currentProvider = FALLBACK_CHAIN[nextIndex];
+                    providerIndex = nextIndex;
+                    setFallbackMessage(`Problema de conexión. Cambiando a ${currentProvider.toUpperCase()}...`);
+                    setLocalAiProvider(currentProvider);
+                    setAiProvider(currentProvider);
+                    if (attempt === FALLBACK_CHAIN.length - 1) {
+                       setFallbackMessage(null);
+                       throw err;
+                    }
+                    await new Promise(r => setTimeout(r, 2000));
                   }
-               );
+               }
+               setTimeout(() => setFallbackMessage(null), 4000);
                const processedText = processAIResponse(responseText || '');
                const newMsg: ChatMessage = { role: 'model', parts: [{ text: processedText }], timestamp: new Date().toISOString() };
                setMessages([...history, newMsg]);
@@ -316,10 +358,21 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         }
       } catch (err: any) {
         console.error(err);
-        const isQuotaError = String(err).includes('429') || String(err).includes('quota');
+        const errStr = String(err);
+        const isQuotaError = errStr.includes('429') || errStr.includes('quota');
+        const isBalanceError = errStr.includes('402') || errStr.includes('Insufficient Balance');
+        const isNotFound = errStr.includes('404') || errStr.includes('Model does not exist');
+        const isTimeout = errStr.includes('aborted') || errStr.includes('AbortError');
+        
+        let errorText = "Ocurrió un error al iniciar la clase con el modelo de IA. El servidor puede estar saturado.";
+        if (isQuotaError) errorText = "Has agotado tu límite de mensajes gratuitos o el servidor está saturado (Error 429).";
+        else if (isBalanceError) errorText = "OpenRouter reporta saldo insuficiente (Error 402). Por favor, recarga tu cuenta.";
+        else if (isNotFound) errorText = "Cerebras reporta que el modelo seleccionado no existe o no tienes acceso (Error 404).";
+        else if (isTimeout) errorText = "El modelo de IA tardó demasiado en responder (Error de Tiempo de Espera).";
+        
         const errorMsg: ChatMessage = { 
           role: 'model',
-          parts: [{ text: isQuotaError ? "Has agotado tu límite de mensajes gratuitos en Gemini o el servidor está saturado (Error 429). Por favor, agrega tu propia API Key en 'Llave IA ⚙️' desde el inicio o espera unos minutos." : "Ocurrió un error al iniciar la clase con el modelo de IA. El servidor puede estar saturado." }], 
+          parts: [{ text: errorText }], 
           timestamp: new Date().toISOString(),
           isError: true,
         };
@@ -601,7 +654,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       console.error(err);
       const errorMsg: ChatMessage = { 
         role: 'model',
-        parts: [{ text: "Ocurrió un error con el modelo de IA (503). Los servidores están saturados." }], 
+        parts: [{ text: String(err).includes('402') ? "Error: OpenRouter reporta saldo insuficiente (402)." : String(err).includes('404') ? "Error: Cerebras reporta modelo inexistente (404)." : String(err).includes('aborted') || String(err).includes('AbortError') ? "Error: El modelo de IA tardó demasiado en responder." : "Ocurrió un error con el modelo de IA. Los servidores están saturados." }], 
         timestamp: new Date().toISOString(),
         isError: true,
         studentResponse: opt
@@ -633,7 +686,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       console.error(err);
       const errorMsg: ChatMessage = { 
         role: 'model',
-        parts: [{ text: "Ocurrió un error con el modelo de IA (503 Service Unavailable). Los servidores están saturados." }], 
+        parts: [{ text: String(err).includes('402') ? "Error: OpenRouter reporta saldo insuficiente (402)." : String(err).includes('404') ? "Error: Cerebras reporta modelo inexistente (404)." : String(err).includes('aborted') || String(err).includes('AbortError') ? "Error: El modelo de IA tardó demasiado en responder." : "Ocurrió un error con el modelo de IA (503 Service Unavailable). Los servidores están saturados." }], 
         timestamp: new Date().toISOString(),
         isError: true,
         studentResponse: userText
@@ -688,6 +741,11 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       const fallbackMatch = text.match(/(\{[\s\S]*?\})\s*\[\/DATA_LOGICA\]/);
       if (fallbackMatch) {
         dataMatch = [fallbackMatch[0], fallbackMatch[1]];
+      } else {
+        const fallbackMatch2 = text.match(/\[DATA_LOGICA\]\s*(\{[\s\S]*?\})\s*(?:\[\/DATA_LOGICA\]|$)/);
+        if (fallbackMatch2) {
+           dataMatch = [fallbackMatch2[0], fallbackMatch2[1]];
+        }
       }
     }
     
@@ -695,6 +753,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     explanation = explanation
       .replace(/\[DATA_LOGICA\][\s\S]*?\[\/DATA_LOGICA\]/g, '')
       .replace(/\{[\s\S]*?\}\s*\[\/DATA_LOGICA\]/g, '')
+      .replace(/\[DATA_LOGICA\][\s\S]*$/g, '')
       .replace(/\[\/DATA_LOGICA\]`?/g, '')
       .replace(/\*\*Draft\*\*/g, '')
       .replace(/\*\*Draft/g, '')
@@ -714,7 +773,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const hasAnsweredMCQ = !!mcqSelection;
 
     // Streaming: show cursor while streaming
-    const displayText = msg.isStreaming && !explanation.trim() ? '...' : explanation;
+    const displayText = msg.isStreaming && !explanation.trim() ? 'El profesor está escribiendo...' : explanation;
 
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
@@ -830,7 +889,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
          <div className="flex-1 overflow-y-auto px-[4%] py-8 custom-scrollbar">
 
             {messages.map((m, i) => renderMessage(m, i))}
-            {isLoading && (
+            {isLoading && !messages.some(m => m.isStreaming) && (
               <div className="flex justify-start w-full mb-6">
                  <div className="bg-white/60 dark:bg-indigo-900/40 p-4 rounded-2xl border-2 border-indigo-50 dark:border-indigo-800 flex items-center space-x-3">
                    <Loader2 className="w-5 h-5 text-indigo-400 animate-spin" />

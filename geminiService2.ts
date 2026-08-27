@@ -35,13 +35,13 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
       const ai = getAIInstance();
       return await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents, config });
     } else {
-      const isDeepseek = provider === 'deepseek';
-      let apiKey = isDeepseek ? (import.meta as any).env?.VITE_DEEPSEEK_API_KEY : (import.meta as any).env?.VITE_CEREBRAS_API_KEY;
-      if (!apiKey) apiKey = isDeepseek ? process.env.DEEPSEEK_API_KEY : process.env.CEREBRAS_API_KEY;
+      const isOpenrouter = provider === 'openrouter';
+      let apiKey = isOpenrouter ? (import.meta as any).env?.VITE_OPENROUTER_API_KEY : (import.meta as any).env?.VITE_CEREBRAS_API_KEY;
+      if (!apiKey) apiKey = isOpenrouter ? process.env.OPENROUTER_API_KEY : process.env.CEREBRAS_API_KEY;
       if (!apiKey) throw new Error(`${provider.toUpperCase()}_API_KEY no configurada localmente.`);
       
-      const endpoint = isDeepseek ? 'https://api.deepseek.com/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
-      const model = isDeepseek ? 'deepseek-chat' : 'llama3.1-8b';
+      const endpoint = isOpenrouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
+      const model = isOpenrouter ? 'openrouter/auto' : 'llama-3.3-70b';
       
       const messages: any[] = [];
       if (config?.systemInstruction) messages.push({ role: 'system', content: config.systemInstruction });
@@ -58,7 +58,7 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
       let temp = config?.temperature ?? 0.7;
       if (config?.responseMimeType === 'application/json') {
           messages.push({ role: 'system', content: 'You must respond ONLY with valid JSON matching the requested schema.'});
-          if (isDeepseek) temp = 0.1; 
+          if (isOpenrouter) temp = 0.1; 
       }
       
       const aiRes = await fetch(endpoint, {

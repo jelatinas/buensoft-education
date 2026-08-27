@@ -21,13 +21,13 @@ export default async function handler(req: any, res: any) {
       });
       return res.status(200).json({ text: response.text });
       
-    } else if (provider === 'deepseek' || provider === 'cerebras') {
-      const isDeepseek = provider === 'deepseek';
-      const apiKey = isDeepseek ? process.env.DEEPSEEK_API_KEY : process.env.CEREBRAS_API_KEY;
+    } else if (provider === 'openrouter' || provider === 'cerebras') {
+      const isOpenrouter = provider === 'openrouter';
+      const apiKey = isOpenrouter ? process.env.OPENROUTER_API_KEY : process.env.CEREBRAS_API_KEY;
       if (!apiKey) return res.status(500).json({ error: `${provider.toUpperCase()}_API_KEY is not configured.` });
       
-      const endpoint = isDeepseek ? 'https://api.deepseek.com/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
-      const model = isDeepseek ? 'deepseek-chat' : 'llama3.1-8b';
+      const endpoint = isOpenrouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
+      const model = isOpenrouter ? 'openrouter/auto' : 'llama-3.3-70b';
       
       // Convert Gemini contents to OpenAI messages
       const messages: any[] = [];
