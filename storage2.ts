@@ -391,17 +391,13 @@ export const deleteSubjectFromStudent = async (studentUsername: string, subject:
   if (error) console.error("Error deleting subject", error);
 };
 
-export const updateLessonsPromptByCriteria = async (studentUsername: string, subject: string, days: boolean[], startDate: string, newPrompt: string) => {
-  const { data, error } = await supabase.from('student_lessons').select('id, date').eq('student_username', studentUsername).eq('subject', subject).gte('date', startDate);
-  if (error || !data) return;
-  const idsToUpdate = data.filter(l => {
-    const d = new Date(l.date + 'T12:00:00');
-    const dayOfWeek = (d.getDay() + 6) % 7;
-    return days[dayOfWeek];
-  }).map(l => String(l.id));
-  if (idsToUpdate.length > 0) {
-    await supabase.from('student_lessons').update({ learning_prompt: newPrompt }).in('id', idsToUpdate);
-  }
+export const updateLessonsPromptByCriteria = async (studentUsername: string, subject: string, newPrompt: string) => {
+  const { error } = await supabase
+    .from('student_lessons')
+    .update({ learning_prompt: newPrompt })
+    .eq('student_username', studentUsername)
+    .eq('subject', subject);
+  if (error) console.error("Error updating prompts", error);
 };
 
 // --- NUEVO FLUJO: MATERIAS, LECCIONES Y MICROTEMAS ---

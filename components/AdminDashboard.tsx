@@ -360,7 +360,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
     if (!updStudent || !updSubject || !updPrompt) return;
     setIsLoading(true);
     try {
-      await updateLessonsPromptByCriteria(updStudent, updSubject, updDays, updStartDate, updPrompt);
+      await updateLessonsPromptByCriteria(updStudent, updSubject, updPrompt);
       alert("Prompts actualizados correctamente.");
       if (selectedStudent === updStudent) refreshStudentLessons();
     } catch (err) { alert("Error al actualizar."); } finally { setIsLoading(false); }
@@ -579,25 +579,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div className="flex flex-col space-y-1">
-                <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Actualizar a partir de:</label>
-                <input type="date" value={updStartDate} onChange={e => setUpdStartDate(e.target.value)} className="w-full p-4 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold" required />
-              </div>
-              <div className="flex flex-col space-y-1">
-                <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Días a aplicar</label>
-                <div className="flex justify-between bg-indigo-50 dark:bg-indigo-950 p-3 rounded-2xl">
-                  {dayNamesShort.map((day, idx) => (
-                    <button key={idx} type="button" onClick={() => {
-                      const newDays = [...updDays];
-                      newDays[idx] = !newDays[idx];
-                      setUpdDays(newDays);
-                    }} className={`w-8 h-8 rounded-full text-[10px] font-black transition-all ${updDays[idx] ? 'bg-amber-500 text-white' : 'bg-white dark:bg-indigo-800 text-indigo-300'}`}>
-                      {day}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </div>
 
             <div className="flex flex-col space-y-1">
