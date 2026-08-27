@@ -579,8 +579,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
               </div>
             </div>
 
-            </div>
-
             <div className="flex flex-col space-y-1">
               <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Nuevo Prompt de IA</label>
               <textarea rows={4} value={updPrompt} onChange={e => setUpdPrompt(e.target.value)} placeholder="Escribe el nuevo prompt..." className="w-full p-4 bg-amber-50 dark:bg-amber-950/20 rounded-2xl font-bold border-2 border-amber-100 italic outline-none" required />
