@@ -172,15 +172,18 @@ export const generateTeacherResponse = async (
 FORMATO OBLIGATORIO:
 [EXPLICACION] <Tu evaluación aquí>. Generando examen de evaluación... [/EXPLICACION]`;
      } else {
+        const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\\n') || '';
         prompt = `El estudiante ha completado todos los temas pero necesita seguir practicando para cumplir el tiempo de estudio. 
-Hazle una pregunta de repaso al azar sobre cualquier tema de la materia.
+Hazle UNA pregunta de repaso de Opción Múltiple (MCQ) al azar, basada ESPECÍFICAMENTE en uno de los temas vistos hoy:
+${topicsList}
+
 Instrucciones: ${feedbackContext 
-  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal para cimentar su conocimiento, y formula UNA NUEVA pregunta.`
+  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal, y formula UNA NUEVA pregunta.`
   : `Haz UNA pregunta de repaso al azar.`}
-IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
+IMPORTANTE: La pregunta debe ser OBLIGATORIAMENTE de Opción Múltiple (MCQ).
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves): 
 [EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
-[DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
+[DATA_LOGICA] {"type":"MCQ", "question":"...", "options":["...","...","...","..."], "correct":"..."} [/DATA_LOGICA]`;
      }
   } else if (currentTopic) {
      const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\\n') || '';
@@ -321,6 +324,7 @@ export const generateExam = async (lessonTitle: string, chatHistory: any[], need
   1. CONTEXTO: Solo conceptos del historial. NO info externa.
   2. FORMATO MCQ y T/F: Evita "todas las anteriores".
   3. ABIERTAS: La "correct_answer" debe ser la rúbrica o idea clave que el estudiante debe mencionar.
+  4. REGLA ESTRICTA DE JSON: Los valores de texto para 'options' y 'question' deben ser CORTOS, LIMPIOS y DIRECTOS. Está ESTRICTAMENTE PROHIBIDO generar cadenas de razonamiento, explicaciones largas, tags de depuración o texto basura dentro de los valores de las opciones.
   
   HISTORIAL:
   ${historyContext}
@@ -392,6 +396,8 @@ export const generateMCQBatch = async (
     - Proporciona 4 opciones.
     - Indica la opción correcta exacta.
     - Proporciona una explicación pedagógica dirigida al estudiante del porqué es correcta.
+    
+    REGLA ESTRICTA DE JSON: Los valores de texto para 'options' y 'question' deben ser CORTOS, LIMPIOS y DIRECTOS. Está ESTRICTAMENTE PROHIBIDO generar cadenas de razonamiento, explicaciones largas, tags de depuración o texto basura dentro de los valores de las opciones.
   `;
 
   const response = await withRetry(() => callGeminiApi('generateMCQBatch', [{ role: 'user', parts: [{ text: prompt }] }], {
