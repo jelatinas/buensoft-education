@@ -173,18 +173,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
          setIsPaused(false);
       }
     };
-    const handleBlur = () => {
-       blurTimeoutRef.current = setTimeout(() => setIsPaused(true), 10000);
-    };
-    const handleFocus = () => {
-       if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
-       setIsPaused(false);
-    };
 
     window.addEventListener('mousemove', resetInactivity);
     window.addEventListener('keydown', resetInactivity);
-    window.addEventListener('blur', handleBlur);
-    window.addEventListener('focus', handleFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     
     resetInactivity();
@@ -192,8 +183,6 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return () => {
       window.removeEventListener('mousemove', resetInactivity);
       window.removeEventListener('keydown', resetInactivity);
-      window.removeEventListener('blur', handleBlur);
-      window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
       if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
@@ -938,7 +927,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       </div>
 
       {showExam && (
-        <div className={`fixed inset-0 bg-indigo-900/95 z-[3000] flex flex-col p-6 transition-opacity duration-500 ${examReady ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
+        <div className={`fixed inset-0 bg-indigo-900/95 z-[3000] flex flex-col p-6 overflow-y-auto transition-opacity duration-500 ${examReady ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
            <ExamComponent 
               lesson={lesson} 
               lessonDbId={masterLeccionIdRef.current || lesson.id.toString()}

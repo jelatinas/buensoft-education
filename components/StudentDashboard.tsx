@@ -4,6 +4,7 @@ import { getStudentData, executeCreditTransfer, getTransactions, getAccountBalan
 import { getAiProvider, setAiProvider } from '../geminiService2';
 import Calendar from './Calendar';
 import VirtualClassroom from './VirtualClassroom';
+import AuditModal from './AuditModal';
 
 interface StudentDashboardProps {
   user: User;
@@ -37,6 +38,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   // Estados para el Interceptor de Ruta
   const [pendingLesson, setPendingLesson] = useState<Lesson | null>(null);
   const [showClassroom, setShowClassroom] = useState(false);
+  const [auditLesson, setAuditLesson] = useState<Lesson | null>(null);
 
   // Estados para el modal de Temario (reemplazado por inline)
   const [expandedLessonId, setExpandedLessonId] = useState<string | null>(null);
@@ -385,9 +387,6 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   const ui = getLessonUIConfig(status, !!lesson.credits_transfered, lesson.id);
                   const isSelected = quickEditLessonId === lesson.id;
                   
-                  // Meta de interacciones (ej. 80% del tiempo en minutos)
-                  const targetInteractions = Math.ceil(lesson.durationMinutes * 0.8);
-
                   return (
                     <div key={lesson.id} className={`p-6 rounded-[2.5rem] border-4 bg-white dark:bg-indigo-950 border-indigo-50 dark:border-indigo-800 relative ${isSelected ? 'ring-4 ring-amber-400' : ''}`}>
                       {isAdminView && isSelected && (
@@ -417,7 +416,6 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                         </h4>
                       </div>
 
-                      {/* Temario Expandible Inline */}
                       {expandedLessonId === String(lesson.id) && (
                         <div className="mb-6 bg-indigo-50/50 dark:bg-indigo-900/20 p-5 rounded-2xl border border-indigo-100/50 animate-in slide-in-from-top-2 duration-200">
                           <p className="text-[10px] font-black text-indigo-400 uppercase mb-3 tracking-widest">Temas a estudiar hoy:</p>
@@ -440,7 +438,6 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                         </div>
                       )}
                       
-                      {/* Detalles adicionales de la lección - Cuadrícula 2x2 */}
                       <div className="grid grid-cols-2 gap-3 mb-6 text-center">
                         <div className="bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-2xl border border-indigo-100/50 flex flex-col justify-center">
                           <p className="text-[8px] font-black text-indigo-400 uppercase leading-none mb-1">Estatus</p>
@@ -466,13 +463,31 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                         </div>
                       </div>
 
-                      <button 
-                        onClick={() => onHandleLessonClick(lesson)} 
-                        disabled={ui.disabled}
-                        className={`w-full py-4 rounded-2xl font-black text-xs shadow-xl active:scale-95 ${ui.color} ${ui.textColor} uppercase transition-all ${ui.disabled ? 'opacity-50 grayscale cursor-not-allowed shadow-none' : 'hover:brightness-110'}`}
-                      >
-                        {ui.btnText}
-                      </button>
+                      { (status === 'Aprobada' || status === 'Completada') && !isAdminView ? (
+                         <div className="grid grid-cols-2 gap-2">
+                           <button 
+                             onClick={() => onHandleLessonClick(lesson)}
+                             disabled={ui.disabled}
+                             className={`w-full ${ui.color} ${ui.textColor} text-[10px] md:text-sm font-black py-4 rounded-2xl uppercase tracking-widest shadow-xl transition-all disabled:opacity-50`}
+                           >
+                             {ui.btnText}
+                           </button>
+                           <button 
+                             onClick={() => setAuditLesson(lesson)}
+                             className="w-full bg-slate-800 text-white text-[10px] md:text-sm font-black py-4 rounded-2xl uppercase tracking-widest shadow-xl transition-all hover:bg-slate-700 flex items-center justify-center gap-1"
+                           >
+                             AUDITAR 🔍
+                           </button>
+                         </div>
+                      ) : (
+                         <button 
+                           onClick={() => onHandleLessonClick(lesson)}
+                           disabled={ui.disabled}
+                           className={`w-full ${ui.color} ${ui.textColor} font-black py-4 rounded-2xl uppercase tracking-widest shadow-xl transition-all disabled:opacity-50`}
+                         >
+                           {ui.btnText}
+                         </button>
+                      )}
                     </div>
                   );
                 })}
@@ -488,7 +503,6 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
           
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Formulario de transferencia bancaria */}
             {!isAdminView && (
               <div className="bg-white dark:bg-indigo-900 p-8 rounded-[3rem] border-4 border-indigo-50 shadow-sm">
                   <h3 className="text-xl font-black text-indigo-900 dark:text-white uppercase mb-6">Transferir Fondos 💸</h3>
@@ -504,7 +518,6 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </div>
             )}
 
-            {/* Historial de Transacciones */}
             <div className={`bg-white dark:bg-indigo-900 p-8 rounded-[3rem] border-4 border-indigo-50 shadow-sm ${isAdminView ? 'lg:col-span-2' : ''}`}>
               <h3 className="text-xl font-black text-indigo-900 dark:text-white uppercase mb-6">Historial de Movimientos 📑</h3>
               <div className="overflow-x-auto">
@@ -554,6 +567,15 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
           onLessonAccredited={(grade) => {
             fetchData();
           }}
+        />
+      )}
+
+      {auditLesson && (
+        <AuditModal 
+          lesson={auditLesson} 
+          studentId={String(user.id || user.username)} 
+          studentUsername={user.username}
+          onClose={() => setAuditLesson(null)} 
         />
       )}
 
