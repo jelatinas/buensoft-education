@@ -72,6 +72,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   const [preloadedMCQs, setPreloadedMCQs] = useState<any[]>([]);
   const [aiProvider, setLocalAiProvider] = useState(getAiProvider());
+  const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
+  const FALLBACK_CHAIN = ['gemini', 'deepseek', 'cerebras'];
   const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newProv = e.target.value;
     setLocalAiProvider(newProv);
@@ -238,11 +240,41 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
           if (history.length === 0) {
              // Fresh start - stream first teacher message
              const topic = lesson.microtemas?.[0];
-             const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: '...' }], timestamp: new Date().toISOString(), isStreaming: true };
+             const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: 'El profesor está escribiendo...' }], timestamp: new Date().toISOString(), isStreaming: true };
              setMessages([streamingMsg]);
-             const responseText = await generateTeacherResponse(lesson, user.username, topic, 0, false, undefined, (partial) => {
-               setMessages([{ ...streamingMsg, parts: [{ text: partial }] }]);
-             });
+             let responseText = "";
+             let currentProvider = aiProvider;
+             let providerIndex = FALLBACK_CHAIN.indexOf(currentProvider);
+             if (providerIndex === -1) providerIndex = 0;
+             
+             for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
+                try {
+                  responseText = await generateTeacherResponse(lesson, user.username, topic, 0, false, undefined, (partial) => {
+                    setMessages(prev => {
+                       const m = [...prev];
+                       if (m.length > 0 && m[m.length-1].isStreaming) {
+                         m[m.length-1] = { ...m[m.length-1], parts: [{ text: partial }] };
+                       }
+                       return m;
+                    });
+                  });
+                  break;
+                } catch (err) {
+                  console.warn(`${currentProvider} failed in init, attempting fallback...`, err);
+                  const nextIndex = (providerIndex + 1) % FALLBACK_CHAIN.length;
+                  currentProvider = FALLBACK_CHAIN[nextIndex];
+                  providerIndex = nextIndex;
+                  setFallbackMessage(`Problema de conexión. Cambiando a ${currentProvider.toUpperCase()}...`);
+                  setLocalAiProvider(currentProvider);
+                  setAiProvider(currentProvider);
+                  if (attempt === FALLBACK_CHAIN.length - 1) {
+                     setFallbackMessage(null);
+                     throw err;
+                  }
+                  await new Promise(r => setTimeout(r, 2000));
+                }
+             }
+             setTimeout(() => setFallbackMessage(null), 4000);
              const processedText = processAIResponse(responseText || '');
              const newMsg: ChatMessage = { role: 'model', parts: [{ text: processedText }], timestamp: new Date().toISOString() };
              setMessages([newMsg]);
@@ -264,7 +296,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                const isReviewMode = !isTimeMet && topicsCount >= 10;
                const currentTopic = lesson.microtemas?.[topicsCount < 10 ? topicsCount : 9];
 
-               const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: '...' }], timestamp: new Date().toISOString(), isStreaming: true };
+               const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: 'El profesor está escribiendo...' }], timestamp: new Date().toISOString(), isStreaming: true };
                setMessages([...history, streamingMsg]);
                const responseText = await generateTeacherResponse(
                   lesson, user.username, currentTopic,
@@ -480,21 +512,50 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     setLoadingText('El profesor está respondiendo...');
 
     // Streaming message
-    const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: '...' }], timestamp: new Date().toISOString(), isStreaming: true };
+    const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: 'El profesor está escribiendo...' }], timestamp: new Date().toISOString(), isStreaming: true };
     setMessages(prev => [...prev, streamingMsg]);
     setIsLoading(false);
 
-    const responseText = await generateTeacherResponse(
-      lesson, user.username, currentTopic,
-      newCompletedTopics < 10 ? newCompletedTopics : 9,
-      isReviewMode, teacherContext,
-      (partial) => {
-        setMessages(prev => [
-          ...prev.slice(0, -1),
-          { ...streamingMsg, parts: [{ text: partial }] }
-        ]);
-      }
-    );
+    let responseText = "";
+    let currentProvider = aiProvider;
+    let providerIndex = FALLBACK_CHAIN.indexOf(currentProvider);
+    if (providerIndex === -1) providerIndex = 0;
+    
+    for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
+       try {
+         responseText = await generateTeacherResponse(
+           lesson, user.username, currentTopic,
+           newCompletedTopics < 10 ? newCompletedTopics : 9,
+           isReviewMode, teacherContext,
+           (partial) => {
+             setMessages(prev => {
+               const idx = prev.findIndex(m => m.isStreaming);
+               if (idx === -1) return prev;
+               const newMsgs = [...prev];
+               newMsgs[idx] = { ...newMsgs[idx], parts: [{ text: partial }] };
+               return newMsgs;
+             });
+           }
+         );
+         break; // Success
+       } catch (err) {
+         console.warn(`${currentProvider} failed, attempting fallback...`, err);
+         const nextIndex = (providerIndex + 1) % FALLBACK_CHAIN.length;
+         currentProvider = FALLBACK_CHAIN[nextIndex];
+         providerIndex = nextIndex;
+         setFallbackMessage(`El modelo tardó demasiado. Cambiando a ${currentProvider.toUpperCase()}...`);
+         setLocalAiProvider(currentProvider);
+         setAiProvider(currentProvider);
+         
+         if (attempt === FALLBACK_CHAIN.length - 1) {
+            setFallbackMessage(null);
+            throw err; // All failed
+         }
+         await new Promise(r => setTimeout(r, 2000));
+       }
+    }
+    setTimeout(() => setFallbackMessage(null), 4000);
+    
 
     const aiText = processAIResponse(responseText || '');
 
@@ -729,6 +790,11 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     <>
       <div className={isEmbedded ? "relative w-full h-[65vh] md:h-[75vh] bg-indigo-50 dark:bg-indigo-950 flex flex-col font-fredoka rounded-[2rem] overflow-hidden border-2 border-indigo-100 dark:border-indigo-800 shadow-inner" : "fixed inset-0 bg-indigo-50 dark:bg-indigo-950 z-[2000] flex flex-col font-fredoka"}>
         <header className="bg-indigo-600 text-white p-4 shadow-lg flex justify-between items-center z-10 shrink-0">
+        {fallbackMessage && (
+          <div className="absolute top-20 left-1/2 transform -translate-x-1/2 bg-amber-500 text-white px-6 py-2 rounded-full font-black text-xs z-50 shadow-2xl animate-bounce">
+             ⚠️ {fallbackMessage}
+          </div>
+        )}
         <div className="flex items-center space-x-4">
            <div className="bg-white/20 px-4 py-2 rounded-2xl flex flex-col items-center min-w-[80px]">
              <span className="text-xl font-black font-mono">{Math.floor(secondsElapsed / 60)}:{String(secondsElapsed % 60).padStart(2, '0')}</span>
