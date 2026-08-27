@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Lesson, ChatMessage } from '../types';
 import { updateLessonInStudent, getClassChatHistory, saveClassChatHistory, getClassIdFromLesson, getMicrotemas } from '../storage2';
-import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch } from '../geminiService2';
+import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch, getAiProvider, setAiProvider } from '../geminiService2';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -51,7 +51,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [loadingText, setLoadingText] = useState('Iniciando clase virtual...');
-  const [aiProvider, setAiProvider] = useState<string>('Gemini');
+  const [lastSystemInstruction, setLastSystemInstruction] = useState<string>('');
   
   // Timer & Inactivity
   const [secondsElapsed, setSecondsElapsed] = useState(0);
@@ -70,8 +70,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [resumeInteractions, setResumeInteractions] = useState(0);
   const RESUME_INTERACTIONS_REQUIRED = 3;
 
-  // Preloaded MCQs
-  const preloadedMCQsRef = useRef<any[]>([]);
+  const [preloadedMCQs, setPreloadedMCQs] = useState<any[]>([]);
+  const [aiProvider, setLocalAiProvider] = useState(getAiProvider());
+  const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newProv = e.target.value;
+    setLocalAiProvider(newProv);
+    setAiProvider(newProv);
+  };
   const currentTopicForPreloadRef = useRef<number>(-1);
   const lastAskedMCQExplanationRef = useRef<string>("");
 
@@ -104,7 +109,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     if (currentTopicForPreloadRef.current === completedTopics) return;
     
     // Ignore if we already have questions queued
-    if (preloadedMCQsRef.current.length > 0) return;
+    if (preloadedMCQs.length > 0) return;
 
     const preload = async () => {
       currentTopicForPreloadRef.current = completedTopics;
@@ -113,7 +118,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       try {
         const mcqs = await generateMCQBatch(lesson, user.username, currentTopic, isRev);
         if (mcqs && mcqs.length > 0) {
-           preloadedMCQsRef.current = mcqs;
+           setPreloadedMCQs(mcqs);
         }
       } catch (e) {
         console.error("Failed to preload MCQs", e);
@@ -437,8 +442,10 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
     // INSTANT PRELOADED MCQ CHECK
     if (mcqIsCorrect !== undefined && newResumeInteractions < RESUME_INTERACTIONS_REQUIRED && !isTopicCompleted) {
-       if (preloadedMCQsRef.current.length > 0) {
-          const nextMCQ = preloadedMCQsRef.current.shift();
+       if (preloadedMCQs.length > 0) {
+          const nextMCQ = preloadedMCQs[0];
+          const restMCQs = preloadedMCQs.slice(1);
+          setPreloadedMCQs(restMCQs);
           lastAskedMCQExplanationRef.current = nextMCQ.explanation;
           
           const feedbackText = mcqIsCorrect ? `¡Correcto! ${teacherContext}` : `¡Incorrecto! ${teacherContext}`;
@@ -728,8 +735,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
              {isRetrying && secondsElapsed < penaltySecondsRequired && (
                 <span className="text-[8px] text-amber-300 font-black uppercase mt-1 text-center leading-tight">Repaso<br/>obligatorio</span>
              )}
-           </div>
-           <div>
+            </div>
+            <div>
              <h2 className="text-sm font-black uppercase truncate max-w-[200px] sm:max-w-md">{lesson.title}</h2>
              <p className="text-[10px] font-bold opacity-80 uppercase flex flex-wrap items-center gap-2 mt-1">
                <span>Temas completados: {completedTopics} / 10</span>

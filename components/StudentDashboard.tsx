@@ -1,22 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, StudentData, Lesson, Transaction, Role } from '../types';
-import { 
-  getStudentData, 
-  executeCreditTransfer, 
-  getTransactions, 
-  getAccountBalance, 
-  autoUpdateLessonStatuses,
-  updateLessonInStudent,
-  deleteLessonFromStudent,
-  clearStudentLessonData,
-  getUsers,
-  executeStudentTransfer,
-  checkAuditStatus,
-  getAuditStatusesBulk,
-  getCourses,
-  getClasses,
-  getTopics
-} from '../storage2';
+import { getStudentData, executeCreditTransfer, getTransactions, getAccountBalance, autoUpdateLessonStatuses, updateLessonInStudent, deleteLessonFromStudent, clearStudentLessonData, getUsers, executeStudentTransfer, checkAuditStatus, getAuditStatusesBulk, getCourses, getClasses, getTopics } from '../storage2';
+import { getAiProvider, setAiProvider } from '../geminiService2';
 import Calendar from './Calendar';
 import VirtualClassroom from './VirtualClassroom';
 
@@ -66,6 +51,13 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   // Ajustes de IA
   const [showAISettings, setShowAISettings] = useState(false);
+  const [aiProvider, setLocalAiProvider] = useState(getAiProvider());
+  
+  const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const newProv = e.target.value;
+    setLocalAiProvider(newProv);
+    setAiProvider(newProv);
+  };
   const [customApiKey, setCustomApiKey] = useState(() => localStorage.getItem('student_gemini_api_key') || '');
   const [customFallbackApiKey, setCustomFallbackApiKey] = useState(() => localStorage.getItem('student_fallback_api_key') || '');
   const [customCerebrasApiKey, setCustomCerebrasApiKey] = useState(() => localStorage.getItem('student_cerebras_api_key') || '');
@@ -333,9 +325,20 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
           <button onClick={() => setActiveSubTab('aula')} className={`px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase transition-all ${activeSubTab === 'aula' ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50'}`}>Aula Virtual 📚</button>
           <button onClick={() => setActiveSubTab('banco')} className={`px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase transition-all ${activeSubTab === 'banco' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-500 hover:bg-amber-50'}`}>Estado de Cuenta 🏦</button>
         </div>
-        <button onClick={() => setShowAISettings(true)} className="px-4 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
-          Llave IA ⚙️
-        </button>
+        <div className="flex items-center">
+          <select 
+            value={aiProvider} 
+            onChange={handleProviderChange} 
+            className="px-3 py-2 bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-300 rounded-xl text-[10px] md:text-xs font-black uppercase border-2 border-indigo-100 dark:border-indigo-800 outline-none mr-2"
+          >
+            <option value="gemini">Gemini</option>
+            <option value="deepseek">DeepSeek V4 Flash</option>
+            <option value="cerebras">Llama 3.1 8B</option>
+          </select>
+          <button onClick={() => setShowAISettings(true)} className="px-4 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+            Llave IA ⚙️
+          </button>
+        </div>
       </div>
 
       {activeSubTab === 'aula' ? (

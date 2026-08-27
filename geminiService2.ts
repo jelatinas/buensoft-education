@@ -2,6 +2,10 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ChatMessage, Lesson, Microtema, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante } from "./types";
 import { getCachedEvaluation, saveEvaluationToCache } from "./storage2";
 
+export const getAiProvider = () => typeof window !== 'undefined' ? (localStorage.getItem('selected_ai_provider') || 'gemini') : 'gemini';
+export const setAiProvider = (provider: string) => typeof window !== 'undefined' && localStorage.setItem('selected_ai_provider', provider);
+
+
 export function shuffleOptions<T>(array: T[]): T[] {
   if (!Array.isArray(array)) return [];
   const shuffled = [...array];
@@ -174,14 +178,16 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
   }
 
   // Use streaming to show text progressively
+  
   const streamFn = async () => {
     let fullText = '';
     const contents = [{ role: 'user', parts: [{ text: prompt }] }];
+    const provider = getAiProvider();
     
-    if (isLocal) {
+    if (isLocal && provider === 'gemini') {
       const ai = getAIInstance();
       const result = await ai.models.generateContentStream({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-3.5-flash-lite',
         contents,
         config: { systemInstruction }
       });
@@ -193,7 +199,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
     } else {
       const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction });
       fullText = response.text || '';
-      // Simulate streaming for production proxy
+      // Simulate streaming for production proxy or non-gemini local
       for (let i = 0; i < fullText.length; i += 6) {
         if (onChunk) onChunk(fullText.substring(0, i));
         await new Promise(r => setTimeout(r, 10)); // fast typing simulation
@@ -202,6 +208,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
     }
     return fullText;
   };
+
 
   return await withRetry(streamFn);
 };
