@@ -33,7 +33,7 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
   if (isLocal) {
     if (provider === 'gemini') {
       const ai = getAIInstance();
-      return await ai.models.generateContent({ model: 'gemini-3.5-flash-lite', contents, config });
+      return await ai.models.generateContent({ model: 'gemini-3.7-flash', contents, config });
     } else {
       const isOpenrouter = provider === 'openrouter';
       let apiKey = isOpenrouter ? (import.meta as any).env?.VITE_OPENROUTER_API_KEY : (import.meta as any).env?.VITE_CEREBRAS_API_KEY;
@@ -65,7 +65,9 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://buensoft.com',
+          'X-Title': 'Buensoft Education'
         },
         body: JSON.stringify({
           model,
@@ -233,7 +235,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
     if (isLocal && provider === 'gemini') {
       const ai = getAIInstance();
       const result = await ai.models.generateContentStream({
-        model: 'gemini-3.5-flash-lite',
+        model: 'gemini-3.7-flash',
         contents,
         config: { systemInstruction }
       });
@@ -589,7 +591,7 @@ export const generateMicrotemas = async (subject: string, description: string) =
   Devuelve un objeto JSON con un array "microtemas" donde cada objeto tenga: titulo (string) y contenido (string).`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3.6-flash',
+    model: 'gemini-3.7-flash',
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
       responseMimeType: "application/json",
@@ -685,7 +687,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-3.7-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           systemInstruction,
@@ -759,7 +761,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
           let apiUrl = "https://openrouter.ai/api/v1/chat/completions";
           let authHeader = `Bearer ${fallbackKey?.trim()}`;
           let requestBody: any = {
-            model: "google/gemini-3.6-flash-free",
+            model: "google/gemini-3.7-flash",
             messages: [
               { role: "system", content: systemInstruction },
               { role: "user", content: prompt + "\n\nResponde SOLO con el JSON estructurado según las reglas." }
@@ -861,7 +863,7 @@ export const evaluateBatchOpenAnswersAI = async (
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-3.7-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { 
           systemInstruction,
@@ -943,7 +945,7 @@ export const evaluateOpenAnswerAI = async (question: string, correctAnswer: stri
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-3.7-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { 
           responseMimeType: "application/json",
@@ -979,7 +981,7 @@ export const generateSpeech = async (text: string) => {
   const ai = getAIInstance();
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash-preview-tts",
+      model: "gemini-3.7-flash",
       contents: [{ parts: [{ text }] }],
       config: {
         responseModalities: [Modality.AUDIO],
@@ -1062,7 +1064,7 @@ export const generateClassExamQuestions = async (
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.6-flash',
+        model: 'gemini-3.7-flash',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           systemInstruction,

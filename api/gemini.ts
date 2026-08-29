@@ -15,9 +15,13 @@ export default async function handler(req: any, res: any) {
       const ai = new GoogleGenAI({ apiKey });
       
       const response = await ai.models.generateContent({
-        model: 'gemini-3.5-flash-lite',
+        model: 'gemini-3.7-flash',
         contents: payload.contents,
-        config: payload.config
+        config: {
+          ...payload.config,
+          // Add tracking label for Buensoft Education
+          labels: { "project": "buensoft-education" }
+        }
       });
       return res.status(200).json({ text: response.text });
       
@@ -57,7 +61,9 @@ export default async function handler(req: any, res: any) {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
+          'Authorization': `Bearer ${apiKey}`,
+          'HTTP-Referer': 'https://buensoft.com',
+          'X-Title': 'Buensoft Education'
         },
         body: JSON.stringify(body)
       });
