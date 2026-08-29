@@ -17,11 +17,7 @@ export default async function handler(req: any, res: any) {
       const response = await ai.models.generateContent({
         model: 'gemini-3.7-flash',
         contents: payload.contents,
-        config: {
-          ...payload.config,
-          // Add tracking label for Buensoft Education
-          labels: { "project": "buensoft-education" }
-        }
+        config: payload.config
       });
       return res.status(200).json({ text: response.text });
       
