@@ -2,8 +2,8 @@ import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ChatMessage, Lesson, Microtema, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante } from "./types";
 import { getCachedEvaluation, saveEvaluationToCache } from "./storage2";
 
-export const getAiProvider = () => typeof window !== 'undefined' ? (localStorage.getItem('selected_ai_provider') || 'gemini') : 'gemini';
-export const setAiProvider = (provider: string) => typeof window !== 'undefined' && localStorage.setItem('selected_ai_provider', provider);
+export const getAiProvider = () => typeof window !== 'undefined' ? (sessionStorage.getItem('selected_ai_provider') || 'openrouter') : 'openrouter';
+export const setAiProvider = (provider: string) => typeof window !== 'undefined' && sessionStorage.setItem('selected_ai_provider', provider);
 
 
 export function shuffleOptions<T>(array: T[]): T[] {
