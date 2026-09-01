@@ -85,7 +85,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [preloadedMCQs, setPreloadedMCQs] = useState<any[]>([]);
   const [aiProvider, setLocalAiProvider] = useState(getAiProvider());
   const [fallbackMessage, setFallbackMessage] = useState<string | null>(null);
-  const FALLBACK_CHAIN = ['gemini', 'openrouter', 'cerebras'];
+  const FALLBACK_CHAIN = ['openrouter', 'gemini', 'cerebras'];
   const handleProviderChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newProv = e.target.value;
     setLocalAiProvider(newProv);
@@ -250,7 +250,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
              
              for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
                 try {
-                  responseText = await generateTeacherResponse(lesson, user.username, topic, 0, false, undefined, (partial) => {
+                  responseText = await generateTeacherResponse(lesson, user, topic, 0, false, undefined, (partial) => {
                     setMessages(prev => {
                        const m = [...prev];
                        if (m.length > 0 && m[m.length-1].isStreaming) {
@@ -307,7 +307,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
                   try {
                     responseText = await generateTeacherResponse(
-                       lesson, user.username, currentTopic,
+                       lesson, user, currentTopic,
                        topicsCount < 10 ? topicsCount : 9, 
                        isReviewMode, 
                        "El estudiante acaba de retomar la clase tras una pausa. Dale una breve y entusiasta bienvenida de vuelta y hazle directamente una nueva pregunta sobre este tema para continuar.",
@@ -439,7 +439,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
           retroalimentacion: explanation 
         };
       } else {
-        evalResult = await evaluateStudentAnswer(studentAnswer, lastQuestion);
+        evalResult = await evaluateStudentAnswer(studentAnswer, lastQuestion, user);
       }
       
       if (evalResult.aprobado) {
@@ -566,7 +566,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
        try {
          responseText = await generateTeacherResponse(
-           lesson, user.username, currentTopic,
+           lesson, user, currentTopic,
            newCompletedTopics < 10 ? newCompletedTopics : 9,
            isReviewMode, teacherContext,
            (partial) => {

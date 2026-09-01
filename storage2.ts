@@ -163,7 +163,9 @@ export const updateUser = async (originalUsername: string, updatedUser: User) =>
   const { error } = await supabase.from('users').update({
     username: updatedUser.username,
     email: updatedUser.email,
-    password: updatedUser.password
+    password: updatedUser.password,
+    student_profile: updatedUser.student_profile,
+    preferred_teacher_profile: updatedUser.preferred_teacher_profile
   }).eq('username', originalUsername);
   if (error) throw error;
 };

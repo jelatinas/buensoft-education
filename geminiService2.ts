@@ -148,7 +148,7 @@ const withRetry = async <T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> =>
 
 export const generateTeacherResponse = async (
   lesson: Lesson,
-  studentName: string,
+  user: any,
   currentTopic: Microtema | undefined,
   topicIndex: number,
   isReviewMode: boolean = false,
@@ -159,9 +159,11 @@ export const generateTeacherResponse = async (
   
   const systemInstruction = `
     ROL: Profesor experto y empático. Enfócate en dar explicaciones claras, directas y objetivas. NO exageres con elogios ni alabanzas (evita decir "¡Excelente trabajo!", "¡Eres un genio!", etc.), mantén un tono profesional. Usa emojis moderadamente.
+    ${user.preferred_teacher_profile ? `INSTRUCCIONES DE PERSONALIDAD DEL MAESTRO: ${user.preferred_teacher_profile}` : ''}
     MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}".
     ${lesson.learningPrompt ? `INSTRUCCIONES ESPECÍFICAS PARA ESTE CURSO (Obligatorias, adáptate a ellas SIN olvidar tu rol de profesor): "${lesson.learningPrompt}"` : ''}
-    ESTUDIANTE: ${studentName}.
+    ESTUDIANTE: ${user.username}.
+    ${user.student_profile ? `PERFIL DEL ESTUDIANTE: ${user.student_profile}` : ''}
   `;
 
   let prompt = "";
@@ -264,7 +266,8 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
 
 export const evaluateStudentAnswer = async (
   studentAnswer: string,
-  lastQuestion: string
+  lastQuestion: string,
+  user?: any
 ) => {
   const cached = await getCachedEvaluation(lastQuestion, studentAnswer);
   if (cached) {
@@ -273,6 +276,13 @@ export const evaluateStudentAnswer = async (
 
   const ai = getAIInstance();
   
+  let systemInstruction = `ROL: Profesor académico experto.`;
+  if (user) {
+    if (user.preferred_teacher_profile) systemInstruction += `\nINSTRUCCIONES DE PERSONALIDAD DEL MAESTRO: ${user.preferred_teacher_profile}`;
+    systemInstruction += `\nESTUDIANTE: ${user.username}`;
+    if (user.student_profile) systemInstruction += `\nPERFIL DEL ESTUDIANTE: ${user.student_profile}`;
+  }
+
   const prompt = `Pregunta hecha al alumno: "${lastQuestion}"
 Respuesta del alumno: "${studentAnswer}"
 Evalúa si la respuesta es correcta o al menos demuestra comprensión razonable.
@@ -280,6 +290,7 @@ Si es incorrecta, debes formular UNA NUEVA PREGUNTA de refuerzo sobre el mismo t
 Responde obligatoriamente en JSON con este formato: {"aprobado": true/false, "retroalimentacion": "<explicación breve y, si falló, incluye aquí la nueva pregunta>"}`;
 
   const response = await withRetry(() => callGeminiApi('evaluateStudentAnswer', [{ role: 'user', parts: [{ text: prompt }] }], {
+    systemInstruction,
     responseMimeType: "application/json",
     responseSchema: {
       type: Type.OBJECT,

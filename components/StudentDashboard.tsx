@@ -64,6 +64,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [customFallbackApiKey, setCustomFallbackApiKey] = useState(() => localStorage.getItem('student_fallback_api_key') || '');
   const [customCerebrasApiKey, setCustomCerebrasApiKey] = useState(() => localStorage.getItem('student_cerebras_api_key') || '');
 
+  const [studentProfile, setStudentProfile] = useState('');
+  const [teacherProfile, setTeacherProfile] = useState('');
+  const [showProfileSettings, setShowProfileSettings] = useState(false);
+
   const ADMIN_UUID = '6a6db323-6229-42e3-a8b8-3ccfa177dfd7';
 
   const getLocalDateStr = (d: Date = new Date()) => {
@@ -117,6 +121,11 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
       setTransactions(history);
       setCurrentBalance(balance);
       setOtherStudents(allUsers.filter(u => (u.id || u.username) !== ownerId && u.role === Role.STUDENT));
+      const currentUserData = allUsers.find(u => u.username === user.username);
+      if (currentUserData) {
+        setStudentProfile(currentUserData.student_profile || '');
+        setTeacherProfile(currentUserData.preferred_teacher_profile || '');
+      }
     } catch (error) { console.error(error); } finally { setIsLoading(false); }
   };
 
@@ -337,6 +346,9 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
             <option value="openrouter">OpenRouter (Auto)</option>
             <option value="cerebras">Llama 3.1 8B</option>
           </select>
+          <button onClick={() => setShowProfileSettings(true)} className="px-4 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+            Perfil 👤
+          </button>
           <button onClick={() => setShowAISettings(true)} className="px-4 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
             Llave IA ⚙️
           </button>
@@ -562,7 +574,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
       {showClassroom && pendingLesson && (
         <VirtualClassroom 
           lesson={pendingLesson} 
-          user={user}
+          user={{ ...user, student_profile: studentProfile, preferred_teacher_profile: teacherProfile }}
           onClose={() => { setShowClassroom(false); setPendingLesson(null); fetchData(); }} 
           onLessonAccredited={(grade) => {
             fetchData();
@@ -577,6 +589,64 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
           studentUsername={user.username}
           onClose={() => setAuditLesson(null)} 
         />
+      )}
+
+      {showProfileSettings && (
+        <div className="fixed inset-0 bg-indigo-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-indigo-950 w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl animate-in fade-in zoom-in duration-200">
+            <h3 className="text-xl font-black text-indigo-900 dark:text-white uppercase mb-4 text-center">Perfil del Estudiante</h3>
+            <p className="text-xs text-indigo-500 text-center mb-6 font-bold">Describe cómo eres y cómo te gustaría que fuera tu maestro para personalizar tus clases con IA.</p>
+            
+            <div className="relative mb-4">
+              <label className="text-[10px] uppercase font-bold text-indigo-400 mb-1 block">Acerca de ti</label>
+              <textarea 
+                placeholder="Nombre, edad, género, gustos, hobbies..."
+                className="w-full bg-indigo-50 dark:bg-indigo-900/30 border-2 border-indigo-100 dark:border-indigo-800 rounded-2xl px-5 py-3 text-sm font-bold text-indigo-900 dark:text-white focus:outline-none focus:border-indigo-400 min-h-[100px] resize-none"
+                value={studentProfile}
+                onChange={(e) => setStudentProfile(e.target.value)}
+              />
+            </div>
+            
+            <div className="relative mb-6">
+              <label className="text-[10px] uppercase font-bold text-indigo-400 mb-1 block">Maestro Ideal</label>
+              <textarea 
+                placeholder="¿Cómo te gustaría que fuera la personalidad de tu maestro de IA?"
+                className="w-full bg-orange-50 dark:bg-orange-900/30 border-2 border-orange-100 dark:border-orange-800 rounded-2xl px-5 py-3 text-sm font-bold text-orange-900 dark:text-white focus:outline-none focus:border-orange-400 min-h-[100px] resize-none"
+                value={teacherProfile}
+                onChange={(e) => setTeacherProfile(e.target.value)}
+              />
+            </div>
+
+            <div className="flex gap-4">
+              <button 
+                onClick={() => setShowProfileSettings(false)}
+                className="flex-1 py-3 rounded-2xl font-black text-xs uppercase text-indigo-400 hover:bg-indigo-50 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button 
+                onClick={async () => {
+                  try {
+                    const { updateUser, getUsers } = await import('../storage2');
+                    const users = await getUsers();
+                    const currentUser = users.find(u => u.username === user.username);
+                    if (currentUser) {
+                      await updateUser(user.username, { ...currentUser, student_profile: studentProfile, preferred_teacher_profile: teacherProfile });
+                      alert('Perfil guardado exitosamente.');
+                    }
+                  } catch (e) {
+                    console.error(e);
+                    alert('Error al guardar el perfil.');
+                  }
+                  setShowProfileSettings(false);
+                }}
+                className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-2xl font-black text-xs uppercase shadow-md transition-colors"
+              >
+                Guardar Perfil
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {showAISettings && (

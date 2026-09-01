@@ -38,6 +38,8 @@ export interface User {
   email?: string;
   password?: string;
   current_session_id?: string | null;
+  student_profile?: string;
+  preferred_teacher_profile?: string;
 }
 
 export interface SubjectGuide {
