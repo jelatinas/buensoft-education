@@ -15,7 +15,7 @@ export default async function handler(req: any, res: any) {
       const ai = new GoogleGenAI({ apiKey });
       
       const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash-lite',
         contents: payload.contents,
         config: payload.config
       });
@@ -27,7 +27,7 @@ export default async function handler(req: any, res: any) {
       if (!apiKey) return res.status(500).json({ error: `${provider.toUpperCase()}_API_KEY is not configured.` });
       
       const endpoint = isOpenrouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
-      const model = isOpenrouter ? 'openrouter/auto' : 'llama-3.3-70b';
+      const model = isOpenrouter ? 'google/gemini-2.5-flash-lite' : 'llama-3.3-70b';
       
       // Convert Gemini contents to OpenAI messages
       const messages: any[] = [];
@@ -47,11 +47,15 @@ export default async function handler(req: any, res: any) {
         }
       }
       
-      const body = {
+      const body: any = {
         model,
         messages,
         temperature: payload.config?.temperature ?? 0.7,
       };
+      
+      if (payload.config?.maxOutputTokens) {
+         body.max_tokens = payload.config.maxOutputTokens;
+      }
 
       const aiRes = await fetch(endpoint, {
         method: 'POST',

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Lesson, ChatMessage } from '../types';
 import { updateLessonInStudent, getClassChatHistory, saveClassChatHistory, getClassIdFromLesson, getMicrotemas } from '../storage2';
 import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch, getAiProvider, setAiProvider } from '../geminiService2';
@@ -61,6 +61,7 @@ const processAIResponse = (rawText: string): string => {
 const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClose, onLessonAccredited, isAdminAudit = false, isEmbedded = false }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingText, setLoadingText] = useState('Iniciando clase virtual...');
   const [lastSystemInstruction, setLastSystemInstruction] = useState<string>('');
@@ -78,6 +79,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const lastInitSignature = useRef("");
   const [showExam, setShowExam] = useState(false);
   const [examReady, setExamReady] = useState(false);
+  const [examStarted, setExamStarted] = useState(false);
   // Interaction counter for resume mode (when all 10 topics already done)
   const [resumeInteractions, setResumeInteractions] = useState(0);
   const RESUME_INTERACTIONS_REQUIRED = 3;
@@ -487,29 +489,57 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const isReadyForExamNow = (newCompletedTopics >= 10) && (newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED);
     
     if (isReadyForExamNow) {
-       // FINAL INTERACTION FOR BOTH MCQ AND OPEN
-       const feedbackText = (mcqIsCorrect !== undefined) 
-           ? (mcqIsCorrect ? `¡Correcto! ${teacherContext}` : `¡Incorrecto! ${teacherContext}`)
-           : teacherContext;
-           
-       const localAiText = `[EXPLICACION] ${feedbackText} [/EXPLICACION]`;
-       const aiMsg: ChatMessage = { role: 'model', parts: [{ text: processAIResponse(localAiText) }], timestamp: new Date().toISOString() };
-       
-       setIsLoading(true);
-       setLoadingText('El profesor está evaluando...');
-       await new Promise(r => setTimeout(r, 1500));
+       // Show streaming bubble while AI generates real feedback for the last answer
+       const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: 'El profesor está evaluando tu respuesta...' }], timestamp: new Date().toISOString(), isStreaming: true };
+       setMessages(prev => [...prev, streamingMsg]);
        setIsLoading(false);
 
+       let responseText = '';
+       let currentProvider = aiProvider;
+       let providerIndex = FALLBACK_CHAIN.indexOf(currentProvider);
+       if (providerIndex === -1) providerIndex = 0;
+
+       for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
+         try {
+           responseText = await generateTeacherResponse(
+             lesson, user, currentTopic, newCompletedTopics < 10 ? newCompletedTopics : 9,
+             true, 'FINAL_REVIEW_INTERACTION',
+             (partial) => {
+               setMessages(prev => {
+                 const idx = prev.findIndex(m => m.isStreaming);
+                 if (idx === -1) return prev;
+                 const m = [...prev];
+                 m[idx] = { ...m[idx], parts: [{ text: partial }] };
+                 return m;
+               });
+             }
+           );
+           break;
+         } catch (err) {
+           const nextIndex = (providerIndex + 1) % FALLBACK_CHAIN.length;
+           currentProvider = FALLBACK_CHAIN[nextIndex];
+           providerIndex = nextIndex;
+           setLocalAiProvider(currentProvider);
+           setAiProvider(currentProvider);
+           if (attempt === FALLBACK_CHAIN.length - 1) throw err;
+           await new Promise(r => setTimeout(r, 2000));
+         }
+       }
+
+       const feedbackMsg: ChatMessage = { role: 'model', parts: [{ text: processAIResponse(responseText || '') }], timestamp: new Date().toISOString() };
+       const examReadyMsg = {
+         role: 'model', isExamReady: true,
+         parts: [{ text: "## ⏳ PREGUNTAS DEL EXAMEN LISTAS\nHemos preparado tu evaluación personalizada. Cuando estés listo, presiona el botón para comenzar." }],
+         timestamp: new Date().toISOString()
+       } as any;
+
        setMessages(prev => {
-         const newMsgs = [...prev, aiMsg, {
-           role: 'model', 
-           parts: [{ text: "## ⏳ GENERANDO PREGUNTAS DEL EXAMEN...\nPor favor espera un momento, estamos preparando tu evaluación personalizada en base a tu progreso." }],
-           timestamp: new Date().toISOString()
-         }];
+         const withoutStreaming = prev.filter(m => !m.isStreaming);
+         const newMsgs = [...withoutStreaming, feedbackMsg, examReadyMsg];
          saveProgress(newMsgs, newCompletedTopics, secondsRef.current);
          return newMsgs;
        });
-       
+
        setShowExam(true);
        return; // SKIP GEMINI API
     }
@@ -619,10 +649,11 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
     if (isReadyForExam) {
       setMessages(prev => [...prev, {
-        role: 'model', 
-        parts: [{ text: "## ⏳ GENERANDO PREGUNTAS DEL EXAMEN...\nPor favor espera un momento, estamos preparando tu evaluación personalizada en base a tu progreso." }],
+        role: 'model',
+        isExamReady: true,
+        parts: [{ text: "## ⏳ PREGUNTAS DEL EXAMEN LISTAS\nHemos preparado tu evaluación personalizada. Cuando estés listo, presiona el botón para comenzar." }],
         timestamp: new Date().toISOString()
-      }]);
+      } as any]);
       setShowExam(true);
     }
   };
@@ -630,8 +661,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   // Handle MCQ option click - visual feedback inline, NO user message bubble
   const handleMCQSelect = async (opt: string, correctAnswer: string, messageIndex: number) => {
     if (isLoading || isPaused || isAdminAudit) return;
+    
+    // BULLETPROOF NORMALIZATION: strip all spaces, punctuation, and special characters. 
+    // Only compare the core letters and numbers to avoid any mismatch.
+    const normalize = (s: any) => String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '');
+    
     // Mark selection immediately for visual feedback
-    const isCorrect = opt === correctAnswer;
+    const isCorrect = normalize(opt) === normalize(correctAnswer) || normalize(correctAnswer).includes(normalize(opt)) || normalize(opt).includes(normalize(correctAnswer));
     setMcqSelections(prev => ({ ...prev, [messageIndex]: { selected: opt, correct: correctAnswer } }));
     
     try {
@@ -659,10 +695,11 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   // Handle written/text answer - adds user message bubble
   const handleSend = async (manualText?: string) => {
-    const userText = manualText || input.trim();
+    const userText = manualText || input.trim() || inputRef.current?.value.trim() || '';
     if (!userText || isLoading || isPaused) return;
 
     setInput('');
+    if (inputRef.current) inputRef.current.value = '';
     setIsLoading(true);
 
     const userMsg: ChatMessage = { role: 'user', parts: [{ text: userText }], timestamp: new Date().toISOString() };
@@ -738,17 +775,22 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       }
     }
     
-    let explanation = expMatch ? expMatch[1].trim() : text;
-    explanation = explanation
-      .replace(/\[DATA_LOGICA\][\s\S]*?\[\/DATA_LOGICA\]/g, '')
-      .replace(/\{[\s\S]*?\}\s*\[\/DATA_LOGICA\]/g, '')
-      .replace(/\[DATA_LOGICA\][\s\S]*$/g, '')
-      .replace(/\[\/DATA_LOGICA\]`?/g, '')
-      .replace(/\*\*Draft\*\*/g, '')
-      .replace(/\*\*Draft/g, '')
-      .replace(/\[EXPLICACION\]|\[\/EXPLICACION\]|\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
+    // --- EXPLANATION EXTRACTION ---
+    // KEY RULE: The final displayed text must NEVER show LESS than what was shown during streaming.
+    // Both streaming and final states use the same logic: show all text before [DATA_LOGICA],
+    // stripping only the special tag markers. This prevents text from "jumping" or disappearing.
+    const cleanTags = (raw: string) => raw
+      .replace(/\[DATA_LOGICA\][\s\S]*$/g, '')         // cut off at [DATA_LOGICA]
+      .replace(/\[EXPLICACION\]|\[\/EXPLICACION\]/g, '') // strip [EXPLICACION] markers
+      .replace(/\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
       .replace(/\[TEMAS_COMPLETADOS:\s*\d+\]/ig, '')
+      .replace(/\*\*Draft\*\*|\*\*Draft/g, '')
       .trim();
+
+    const explanation = cleanTags(text);
+
+    // Show placeholder only if streaming hasn't produced any visible text yet
+    const displayText = msg.isStreaming && !explanation.trim() ? 'El profesor está escribiendo...' : explanation;
 
     let questionData: any = null;
     if (dataMatch) {
@@ -758,15 +800,14 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
 
     const isLastMessage = index === messages.length - 1;
-    const mcqSelection = mcqSelections[index] || (msg.selectedOption ? { selected: msg.selectedOption, correct: questionData?.correct || '' } : undefined); // track MCQ answer for this message
+    const mcqSelection = mcqSelections[index] || (msg.selectedOption ? { selected: msg.selectedOption, correct: questionData?.correct || '' } : undefined);
     const hasAnsweredMCQ = !!mcqSelection;
 
-    // Streaming: show cursor while streaming
-    const displayText = msg.isStreaming && !explanation.trim() ? 'El profesor está escribiendo...' : explanation;
 
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.9</div>
           <div className={`prose dark:prose-invert max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={MarkdownComponents}>{displayText}</ReactMarkdown>
           </div>
@@ -777,8 +818,14 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                {questionData.type === 'MCQ' && questionData.options && (
                  <div className="grid gap-2">
                    {questionData.options.map((opt: string, i: number) => {
-                     const isSelected = mcqSelection?.selected === opt;
-                     const isCorrectOpt = opt === questionData.correct || opt === mcqSelection?.correct;
+                     const normalize = (s: any) => String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '');
+                     const checkMatch = (a: string, b: string) => {
+                        const nA = normalize(a); const nB = normalize(b);
+                        return nA === nB || (nA.length > 5 && nB.length > 5 && (nA.includes(nB) || nB.includes(nA)));
+                     };
+                     
+                     const isSelected = mcqSelection ? checkMatch(mcqSelection.selected, opt) : false;
+                     const isCorrectOpt = checkMatch(opt, questionData.correct) || (mcqSelection && checkMatch(opt, mcqSelection.correct));
                      
                      let btnClass = "text-left w-full p-4 rounded-xl font-bold border-2 transition-all ";
                      let icon = null;
@@ -807,7 +854,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                          }
                        }
                      } else {
-                       btnClass += "bg-indigo-50 dark:bg-indigo-950 border-indigo-100 dark:border-indigo-800 hover:bg-indigo-600 hover:text-white hover:border-indigo-600";
+                        // Unselected: only change border on hover, no background fill
+                        btnClass += "bg-white dark:bg-indigo-950 border-indigo-200 dark:border-indigo-700 hover:border-indigo-500 dark:hover:border-indigo-400";
                      }
 
                      return (
@@ -828,6 +876,16 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                  <p className="text-xs text-indigo-400 font-bold uppercase tracking-widest animate-pulse mt-2">Escribe tu respuesta abajo 👇</p>
                )}
              </div>
+          )}
+          {(msg as any).isExamReady && showExam && !examStarted && (
+            <div className="mt-5 pt-4 border-t-2 border-indigo-100 dark:border-indigo-700">
+              <button
+                onClick={() => setExamStarted(true)}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-black py-4 px-8 rounded-2xl shadow-xl text-lg uppercase tracking-wide transition-all flex items-center justify-center gap-3"
+              >
+                🎓 Comenzar Examen
+              </button>
+            </div>
           )}
         </div>
       </div>
@@ -877,7 +935,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       <div className="flex-1 relative flex flex-col overflow-hidden bg-sky-50 dark:bg-indigo-950/50">
          <div className="flex-1 overflow-y-auto px-[4%] py-8 custom-scrollbar">
 
-            {messages.map((m, i) => renderMessage(m, i))}
+            {useMemo(() => messages.map((m, i) => renderMessage(m, i)), [messages, mcqSelections, isLoading, showExam, examStarted])}
             {isLoading && !messages.some(m => m.isStreaming) && (
               <div className="flex justify-start w-full mb-6">
                  <div className="bg-white/60 dark:bg-indigo-900/40 p-4 rounded-2xl border-2 border-indigo-50 dark:border-indigo-800 flex items-center space-x-3">
@@ -893,17 +951,31 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
            <div className="p-4 bg-white dark:bg-indigo-900 border-t-4 border-indigo-50 dark:border-indigo-800">
              <div className="w-full max-w-4xl mx-auto flex items-center space-x-3">
                <input
+                 ref={inputRef}
                  type="text"
-                 value={input}
-                 onChange={(e) => setInput(e.target.value)}
-                 onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                 defaultValue=""
+                 onKeyDown={(e) => {
+                   if (e.key === 'Enter') {
+                     const val = inputRef.current?.value.trim() || '';
+                     if (val) {
+                       setInput(val);
+                       setTimeout(() => handleSend(), 0);
+                     }
+                   }
+                 }}
                  disabled={isLoading || isPaused || showExam}
                  placeholder="Escribe tu respuesta..."
                  className="flex-1 px-6 py-4 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold outline-none focus:border-indigo-500 disabled:opacity-50"
                />
                <button 
-                 onClick={() => handleSend()}
-                 disabled={isLoading || isPaused || showExam || !input.trim()}
+                 onClick={() => {
+                   const val = inputRef.current?.value.trim() || '';
+                   if (val) {
+                     setInput(val);
+                     setTimeout(() => handleSend(), 0);
+                   }
+                 }}
+                 disabled={isLoading || isPaused || showExam}
                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white p-4 rounded-2xl shadow-lg transition-all"
                >
                  <Send size={24} />
@@ -926,7 +998,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       )}
       </div>
 
-      {showExam && (
+      {showExam && examStarted && (
         <div className={`fixed inset-0 bg-indigo-900/95 z-[3000] flex flex-col p-6 overflow-y-auto transition-opacity duration-500 ${examReady ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}>
            <ExamComponent 
               lesson={lesson} 

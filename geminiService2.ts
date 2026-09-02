@@ -33,7 +33,7 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
   if (isLocal) {
     if (provider === 'gemini') {
       const ai = getAIInstance();
-      return await ai.models.generateContent({ model: 'gemini-3.7-flash', contents, config });
+      return await ai.models.generateContent({ model: 'gemini-2.5-flash-lite', contents, config });
     } else {
       const isOpenrouter = provider === 'openrouter';
       let apiKey = isOpenrouter ? (import.meta as any).env?.VITE_OPENROUTER_API_KEY : (import.meta as any).env?.VITE_CEREBRAS_API_KEY;
@@ -41,7 +41,7 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
       if (!apiKey) throw new Error(`${provider.toUpperCase()}_API_KEY no configurada localmente.`);
       
       const endpoint = isOpenrouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
-      const model = isOpenrouter ? 'openrouter/auto' : 'llama-3.3-70b';
+      const model = isOpenrouter ? 'google/gemini-2.5-flash-lite' : 'llama-3.3-70b';
       
       const messages: any[] = [];
       if (config?.systemInstruction) messages.push({ role: 'system', content: config.systemInstruction });
@@ -61,6 +61,16 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
           if (isOpenrouter) temp = 0.1; 
       }
       
+      const bodyConfig: any = {
+          model,
+          messages,
+          temperature: temp,
+          response_format: config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined
+      };
+      if (config?.maxOutputTokens) {
+          bodyConfig.max_tokens = config.maxOutputTokens;
+      }
+      
       const aiRes = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -69,12 +79,7 @@ const callGeminiApi = async (action: string, contents: any[], config: any) => {
           'HTTP-Referer': 'https://buensoft.com',
           'X-Title': 'Buensoft Education'
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          temperature: temp,
-          response_format: config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined
-        })
+        body: JSON.stringify(bodyConfig)
       });
       
       if (!aiRes.ok) throw new Error(`API Error ${aiRes.status}: ${await aiRes.text()}`);
@@ -164,6 +169,7 @@ export const generateTeacherResponse = async (
     ${lesson.learningPrompt ? `INSTRUCCIONES ESPECÍFICAS PARA ESTE CURSO (Obligatorias, adáptate a ellas SIN olvidar tu rol de profesor): "${lesson.learningPrompt}"` : ''}
     ESTUDIANTE: ${user.username}.
     ${user.student_profile ? `PERFIL DEL ESTUDIANTE: ${user.student_profile}` : ''}
+    REGLA DE ORO: TUS EXPLICACIONES DEBEN SER EXTREMADAMENTE BREVES Y CONCISAS (MÁXIMO 50 PALABRAS). VE DIRECTO AL GRANO.
   `;
 
   let prompt = "";
@@ -185,9 +191,12 @@ Instrucciones: ${feedbackContext
   ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal, y formula UNA NUEVA pregunta.`
   : `Haz UNA pregunta de repaso al azar.`}
 IMPORTANTE: La pregunta debe ser OBLIGATORIAMENTE de Opción Múltiple (MCQ).
-FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves): 
+FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
+¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION].
 [EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
-[DATA_LOGICA] {"type":"MCQ", "question":"...", "options":["...","...","...","..."], "correct":"..."} [/DATA_LOGICA]`;
+[EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
+[DATA_LOGICA] {"type":"MCQ", "question":"...", "options":["...","...","...","..."], "correct":"..."} [/DATA_LOGICA]
+REGLA VITAL PARA EL MCQ: El valor de "correct" DEBE SER EXACTAMENTE IDÉNTICO letra por letra a una de las "options". No agregues prefijos como "A)" si no están en las opciones.`;
      }
   } else if (currentTopic) {
      const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\\n') || '';
@@ -206,6 +215,7 @@ INSTRUCCIÓN VITAL:
 
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
+¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION].
 [EXPLICACION] <Lista de temas, explicación y ejemplo aquí> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      } else {
@@ -220,6 +230,7 @@ Si seguimos en el MISMO tema, solo da el feedback y continúa.`
 Finalmente, haz UNA (1) sola pregunta para validar su comprensión.
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
+¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION]. Sé directo, breve y no redundes.
 [EXPLICACION] <Tu explicación/feedback y ejemplo aquí> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      }
@@ -237,9 +248,9 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
     if (isLocal && provider === 'gemini') {
       const ai = getAIInstance();
       const result = await ai.models.generateContentStream({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash-lite',
         contents,
-        config: { systemInstruction }
+        config: { systemInstruction, maxOutputTokens: 600 }
       });
       for await (const chunk of result) {
         const chunkText = chunk.text || '';
@@ -247,12 +258,12 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
         if (onChunk && chunkText) onChunk(fullText);
       }
     } else {
-      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction });
+      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction, maxOutputTokens: 600 });
       fullText = response.text || '';
       // Simulate streaming for production proxy or non-gemini local
       for (let i = 0; i < fullText.length; i += 6) {
         if (onChunk) onChunk(fullText.substring(0, i));
-        await new Promise(r => setTimeout(r, 10)); // fast typing simulation
+        await new Promise(r => setTimeout(r, 10));
       }
       if (onChunk) onChunk(fullText);
     }
@@ -602,7 +613,7 @@ export const generateMicrotemas = async (subject: string, description: string) =
   Devuelve un objeto JSON con un array "microtemas" donde cada objeto tenga: titulo (string) y contenido (string).`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-3.7-flash',
+    model: 'gemini-2.5-flash-lite',
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
       responseMimeType: "application/json",
@@ -640,7 +651,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
   
   const historyContext = (chatHistory || [])
     .filter(m => m.parts && m.parts[0]?.text && !m.isSilent)
-    .slice(-20) 
+    .slice(-5) 
     .map(m => {
       const cleanText = m.parts[0].text.replace(/\[.*?\]/g, '').trim();
       return `${m.role === 'user' ? 'Estudiante' : 'Profesor'}: ${cleanText}`;
@@ -648,15 +659,15 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
     .filter(t => t.length > 20)
     .join('\n---\n');
     
-  const prompt = `Genera exactamente 20 preguntas de evaluación únicas para la materia "${subject}" y lección "${lessonTitle}".
+  const prompt = `Genera exactamente 10 preguntas de evaluación únicas para la materia "${subject}" y lección "${lessonTitle}".
   
   DISTRIBUCIÓN OBLIGATORIA:
-  - 10 preguntas abiertas (tipo: 'open')
-  - 5 preguntas de opción múltiple (tipo: 'multiple_choice')
-  - 5 preguntas de verdadero/falso (tipo: 'true_false')
+  - 5 preguntas abiertas (tipo: 'open')
+  - 3 preguntas de opción múltiple (tipo: 'multiple_choice')
+  - 2 preguntas de verdadero/falso (tipo: 'true_false')
   
   COBERTURA:
-  - Debes generar exactamente 2 preguntas por cada microtema proporcionado (hay 10 microtemas).
+  - Debes generar exactamente 1 pregunta por cada microtema proporcionado (hay 10 microtemas).
   - IMPORTANTÍSIMO: Utiliza CONTEXTO DE LA CLASE y ejemplos específicos que se hayan mencionado en el historial de chat para formular las preguntas, haciendo el examen más personalizado y contextualizado.
   
   CONTEXTO (MICROTEMAS):
@@ -676,7 +687,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
   4. Para 'true_false', el campo "respuesta_correcta" DEBE ser exactamente "VERDADERO" o "FALSO". No uses "True", "False", "Verdadero" o "Falso" con otra capitalización.
   5. La pregunta debe ser clara, profesional y basada estrictamente en el contenido de los microtemas.
   6. ANALÍTICO: Si la materia es técnica (Programación, Matemáticas, etc.), incluye preguntas de razonamiento, depuración de código (ej: identificar errores) o resolución de problemas prácticos.
-  7. Asegúrate de que las 20 preguntas sean diferentes entre sí.
+  7. Asegúrate de que las 10 preguntas sean diferentes entre sí.
   
   JSON: {
     "preguntas": [
@@ -698,7 +709,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash-lite',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           systemInstruction,
@@ -772,7 +783,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
           let apiUrl = "https://openrouter.ai/api/v1/chat/completions";
           let authHeader = `Bearer ${fallbackKey?.trim()}`;
           let requestBody: any = {
-            model: "google/gemini-3.7-flash",
+            model: "google/gemini-2.5-flash-lite",
             messages: [
               { role: "system", content: systemInstruction },
               { role: "user", content: prompt + "\n\nResponde SOLO con el JSON estructurado según las reglas." }
@@ -858,7 +869,7 @@ export const evaluateBatchOpenAnswersAI = async (
     - No repitas la pregunta en el feedback.
     - Dirígete al estudiante.
     
-    FORMATO DE SALIDA (JSON ARRAY):
+    FORMATO DE SALIDA (JSON ARRAY PURO, sin texto adicional):
     [
       {
         "result": "Correcta" | "Incorrecta" | "Parcialmente Correcta",
@@ -867,34 +878,19 @@ export const evaluateBatchOpenAnswersAI = async (
     ]
     
     IMPORTANTE: El orden del arreglo de salida DEBE coincidir exactamente con el orden del arreglo de entrada.
+    Responde ÚNICAMENTE con el JSON array, sin explicaciones adicionales.
   `;
 
   const prompt = JSON.stringify(answers);
+  const contents = [{ role: 'user', parts: [{ text: prompt }] }];
 
   for (let i = 0; i <= retries; i++) {
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: { 
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                result: { 
-                  type: Type.STRING,
-                  enum: ["Correcta", "Incorrecta", "Parcialmente Correcta"]
-                },
-                feedback: { type: Type.STRING }
-              },
-              required: ["result"]
-            }
-          },
-          temperature: 0.1
-        }
+      // Use callGeminiApi which routes through OpenRouter (avoids direct Google API 404)
+      const response = await callGeminiApi('evaluateBatchOpenAnswers', contents, {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        temperature: 0.1
       });
       
       const text = response.text || '';
@@ -956,7 +952,7 @@ export const evaluateOpenAnswerAI = async (question: string, correctAnswer: stri
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
+        model: 'gemini-2.5-flash-lite',
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { 
           responseMimeType: "application/json",
@@ -992,7 +988,7 @@ export const generateSpeech = async (text: string) => {
   const ai = getAIInstance();
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-3.7-flash",
+      model: "gemini-2.5-flash-lite",
       contents: [{ parts: [{ text }] }],
       config: {
         responseModalities: [Modality.AUDIO],
@@ -1068,42 +1064,38 @@ export const generateClassExamQuestions = async (
   1. PARA OPCION MULTIPLE (multiple_choice): Genera 4 opciones. La correcta debe ser aleatoria (no siempre la A).
   2. El campo 'tipo' debe ser exactamente 'open', 'multiple_choice' o 'true_false'.
   3. Para 'true_false', la correcta debe ser 'VERDADERO' o 'FALSO'.
-  4. El campo 'opciones' DEBE ser un arreglo de strings (textos), NO objetos. Ejemplo: ["Opcion 1", "Opcion 2"]`;
+  4. El campo 'opciones' DEBE ser un arreglo de strings (textos), NO objetos. Ejemplo: ["Opcion 1", "Opcion 2"]
+  5. FORMATO DE SALIDA EXACTO (Un objeto con la propiedad "preguntas" que es un arreglo):
+  {
+    "preguntas": [
+      {
+        "tipo": "open" | "multiple_choice" | "true_false",
+        "pregunta": "Texto de la pregunta",
+        "respuesta_correcta": "La respuesta correcta (para true_false debe ser VERDADERO o FALSO)",
+        "explicacion": "Explicacion de por que es correcta",
+        "opciones": ["opcion 1", "opcion 2", "opcion 3", "opcion 4"] // Solo para multiple_choice
+      }
+    ]
+  }`;
 
   const systemInstruction = "Eres un generador de JSON estricto. Tu tarea es generar preguntas de evaluacion para estudiantes.";
 
   for (let i = 0; i <= retries; i++) {
     try {
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.7-flash',
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config: {
-          systemInstruction,
-          responseMimeType: "application/json",
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              preguntas: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    tipo: { type: Type.STRING, enum: ['open', 'multiple_choice', 'true_false'] },
-                    pregunta: { type: Type.STRING },
-                    respuesta_correcta: { type: Type.STRING },
-                    explicacion: { type: Type.STRING },
-                    opciones: { type: Type.ARRAY, items: { type: Type.STRING } }
-                  },
-                  required: ['tipo', 'pregunta', 'respuesta_correcta']
-                }
-              }
-            }
-          }
-        }
+      // Use callGeminiApi to route through OpenRouter (avoids direct Google API 404)
+      const contents = [{ role: 'user', parts: [{ text: prompt }] }];
+      const response = await callGeminiApi('generateClassExamQuestions', contents, {
+        systemInstruction,
+        responseMimeType: 'application/json',
+        temperature: 0.3
       });
       const cleaned = cleanJsonResponse(response.text || '');
       const examData = JSON.parse(cleaned);
-      if (examData.preguntas) return examData.preguntas;
+      if (examData?.preguntas && Array.isArray(examData.preguntas)) {
+        return examData.preguntas;
+      }
+      // Sometimes the response is a direct array
+      if (Array.isArray(examData)) return examData;
     } catch (e) {
       if (i === retries) throw e;
       await new Promise(r => setTimeout(r, 2000));

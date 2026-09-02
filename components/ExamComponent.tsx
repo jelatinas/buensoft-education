@@ -231,9 +231,10 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
           isCorrect = studentAnswer === q.respuesta_correcta;
           score = isCorrect ? 1 : 0;
           status = isCorrect ? 'correcta' : 'incorrecta';
+          if (!q.explicacion) explanation = isCorrect ? "¡Respuesta correcta!" : `Respuesta incorrecta. La correcta era: ${q.respuesta_correcta}`;
         } else if (q.tipo === 'true_false') {
-          const normalize = (s: string) => {
-            const lower = s.toLowerCase().trim();
+          const normalize = (s: any) => {
+            const lower = String(s || '').toLowerCase().trim();
             if (lower === 'true' || lower === 'verdadero') return 'verdadero';
             if (lower === 'false' || lower === 'falso') return 'falso';
             return lower;
@@ -241,6 +242,7 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
           isCorrect = normalize(studentAnswer) === normalize(q.respuesta_correcta);
           score = isCorrect ? 1 : 0;
           status = isCorrect ? 'correcta' : 'incorrecta';
+          if (!q.explicacion) explanation = isCorrect ? "¡Respuesta correcta!" : `Respuesta incorrecta. La correcta era: ${q.respuesta_correcta}`;
         } else if (q.tipo === 'open') {
           // Las preguntas abiertas se califican al final en lote
           isCorrect = true; // Marcamos como "completada" para el flujo
