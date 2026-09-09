@@ -5,6 +5,17 @@ import { getCachedEvaluation, saveEvaluationToCache } from "./storage2";
 export const getAiProvider = () => typeof window !== 'undefined' ? (sessionStorage.getItem('selected_ai_provider') || 'openrouter') : 'openrouter';
 export const setAiProvider = (provider: string) => typeof window !== 'undefined' && sessionStorage.setItem('selected_ai_provider', provider);
 
+const GEMINI_MODEL = 'gemini-3.5-flash-lite';
+const OPENROUTER_MODEL = 'google/gemini-3.5-flash-lite';
+const CEREBRAS_MODEL = 'llama-3.3-70b';
+const EXAM_PROVIDER_CHAIN = ['openrouter', 'gemini', 'cerebras'];
+
+const getActionTimeoutMs = (action: string) => {
+  if (action === 'generateTeacherResponse') return 20000;
+  if (action === 'generateClassExamQuestions' || action === 'generateExam' || action === 'generateQuestionBank') return 45000;
+  return 30000;
+};
+
 
 export function shuffleOptions<T>(array: T[]): T[] {
   if (!Array.isArray(array)) return [];
@@ -27,76 +38,97 @@ const getAIInstance = () => {
 
 const isLocal = typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
 
-const callGeminiApi = async (action: string, contents: any[], config: any) => {
-  const provider = getAiProvider();
-  
-  if (isLocal) {
-    if (provider === 'gemini') {
-      const ai = getAIInstance();
-      return await ai.models.generateContent({ model: 'gemini-2.5-flash-lite', contents, config });
-    } else {
-      const isOpenrouter = provider === 'openrouter';
-      let apiKey = isOpenrouter ? (import.meta as any).env?.VITE_OPENROUTER_API_KEY : (import.meta as any).env?.VITE_CEREBRAS_API_KEY;
-      if (!apiKey) apiKey = isOpenrouter ? process.env.OPENROUTER_API_KEY : process.env.CEREBRAS_API_KEY;
-      if (!apiKey) throw new Error(`${provider.toUpperCase()}_API_KEY no configurada localmente.`);
-      
-      const endpoint = isOpenrouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
-      const model = isOpenrouter ? 'google/gemini-2.5-flash-lite' : 'llama-3.3-70b';
-      
-      const messages: any[] = [];
-      if (config?.systemInstruction) messages.push({ role: 'system', content: config.systemInstruction });
-      
-      for (const item of (contents || [])) {
-        let textContent = '';
-        if (item.parts && Array.isArray(item.parts)) {
-          textContent = item.parts.map((p: any) => p.text || '').join('');
+const callGeminiApi = async (action: string, contents: any[], config: any, providerOverride?: string) => {
+  const provider = providerOverride || getAiProvider();
+  const timeoutMs = getActionTimeoutMs(action);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    if (isLocal) {
+      if (provider === 'gemini') {
+        const ai = getAIInstance();
+        return await Promise.race([
+          ai.models.generateContent({ model: GEMINI_MODEL, contents, config }),
+          new Promise((_, reject) => {
+            const onAbort = () => reject(new Error(`AbortError: ${action} tardó más de ${timeoutMs / 1000}s`));
+            if (controller.signal.aborted) onAbort();
+            else controller.signal.addEventListener('abort', onAbort, { once: true });
+          })
+        ]);
+      } else {
+        const isOpenrouter = provider === 'openrouter';
+        let apiKey = isOpenrouter ? (import.meta as any).env?.VITE_OPENROUTER_API_KEY : (import.meta as any).env?.VITE_CEREBRAS_API_KEY;
+        if (!apiKey) apiKey = isOpenrouter ? process.env.OPENROUTER_API_KEY : process.env.CEREBRAS_API_KEY;
+        if (!apiKey) throw new Error(`${provider.toUpperCase()}_API_KEY no configurada localmente.`);
+        
+        const endpoint = isOpenrouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
+        const model = isOpenrouter ? OPENROUTER_MODEL : CEREBRAS_MODEL;
+        
+        const messages: any[] = [];
+        if (config?.systemInstruction) messages.push({ role: 'system', content: config.systemInstruction });
+        
+        for (const item of (contents || [])) {
+          let textContent = '';
+          if (item.parts && Array.isArray(item.parts)) {
+            textContent = item.parts.map((p: any) => p.text || '').join('');
+          }
+          const role = item.role === 'model' ? 'assistant' : 'user';
+          if (textContent) messages.push({ role, content: textContent });
         }
-        const role = item.role === 'model' ? 'assistant' : 'user';
-        if (textContent) messages.push({ role, content: textContent });
+        
+        let temp = config?.temperature ?? 0.7;
+        if (config?.responseMimeType === 'application/json') {
+            messages.push({ role: 'system', content: 'You must respond ONLY with valid JSON matching the requested schema.'});
+            if (isOpenrouter) temp = 0.1; 
+        }
+        
+        const bodyConfig: any = {
+            model,
+            messages,
+            temperature: temp,
+            response_format: config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined
+        };
+        if (config?.maxOutputTokens) {
+            bodyConfig.max_tokens = config.maxOutputTokens;
+        }
+        
+        const aiRes = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`,
+            'HTTP-Referer': 'https://buensoft.com',
+            'X-Title': 'Buensoft Education'
+          },
+          body: JSON.stringify(bodyConfig),
+          signal: controller.signal
+        });
+        
+        if (!aiRes.ok) throw new Error(`API Error ${aiRes.status}: ${await aiRes.text()}`);
+        const data = await aiRes.json();
+        return { text: data.choices?.[0]?.message?.content || '' };
       }
-      
-      let temp = config?.temperature ?? 0.7;
-      if (config?.responseMimeType === 'application/json') {
-          messages.push({ role: 'system', content: 'You must respond ONLY with valid JSON matching the requested schema.'});
-          if (isOpenrouter) temp = 0.1; 
-      }
-      
-      const bodyConfig: any = {
-          model,
-          messages,
-          temperature: temp,
-          response_format: config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined
-      };
-      if (config?.maxOutputTokens) {
-          bodyConfig.max_tokens = config.maxOutputTokens;
-      }
-      
-      const aiRes = await fetch(endpoint, {
+    } else {
+      const res = await fetch('/api/gemini', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-          'HTTP-Referer': 'https://buensoft.com',
-          'X-Title': 'Buensoft Education'
-        },
-        body: JSON.stringify(bodyConfig)
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action, payload: { provider, contents, config } }),
+        signal: controller.signal
       });
-      
-      if (!aiRes.ok) throw new Error(`API Error ${aiRes.status}: ${await aiRes.text()}`);
-      const data = await aiRes.json();
-      return { text: data.choices?.[0]?.message?.content || '' };
+      if (!res.ok) {
+         const errorData = await res.json().catch(() => ({}));
+         throw new Error(errorData.error || `API Error: ${res.statusText}`);
+      }
+      return await res.json();
     }
-  } else {
-    const res = await fetch('/api/gemini', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, payload: { provider, contents, config } })
-    });
-    if (!res.ok) {
-       const errorData = await res.json().catch(() => ({}));
-       throw new Error(errorData.error || `API Error: ${res.statusText}`);
+  } catch (err: any) {
+    if (err?.name === 'AbortError' || String(err).includes('AbortError')) {
+      throw new Error(`AbortError: ${action} tardó más de ${timeoutMs / 1000}s`);
     }
-    return await res.json();
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
 };
 
@@ -160,8 +192,6 @@ export const generateTeacherResponse = async (
   feedbackContext?: string,
   onChunk?: (partial: string) => void
 ) => {
-  const ai = getAIInstance();
-  
   const systemInstruction = `
     ROL: Profesor experto y empático. Enfócate en dar explicaciones claras, directas y objetivas. NO exageres con elogios ni alabanzas (evita decir "¡Excelente trabajo!", "¡Eres un genio!", etc.), mantén un tono profesional. Usa emojis moderadamente.
     ${user.preferred_teacher_profile ? `INSTRUCCIONES DE PERSONALIDAD DEL MAESTRO: ${user.preferred_teacher_profile}` : ''}
@@ -248,7 +278,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
     if (isLocal && provider === 'gemini') {
       const ai = getAIInstance();
       const result = await ai.models.generateContentStream({
-        model: 'gemini-2.5-flash-lite',
+        model: GEMINI_MODEL,
         contents,
         config: { systemInstruction, maxOutputTokens: 600 }
       });
@@ -613,7 +643,7 @@ export const generateMicrotemas = async (subject: string, description: string) =
   Devuelve un objeto JSON con un array "microtemas" donde cada objeto tenga: titulo (string) y contenido (string).`;
 
   const response = await ai.models.generateContent({
-    model: 'gemini-2.5-flash-lite',
+    model: GEMINI_MODEL,
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config: {
       responseMimeType: "application/json",
@@ -709,7 +739,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-lite',
+        model: GEMINI_MODEL,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: {
           systemInstruction,
@@ -783,7 +813,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
           let apiUrl = "https://openrouter.ai/api/v1/chat/completions";
           let authHeader = `Bearer ${fallbackKey?.trim()}`;
           let requestBody: any = {
-            model: "google/gemini-2.5-flash-lite",
+            model: OPENROUTER_MODEL,
             messages: [
               { role: "system", content: systemInstruction },
               { role: "user", content: prompt + "\n\nResponde SOLO con el JSON estructurado según las reglas." }
@@ -952,7 +982,7 @@ export const evaluateOpenAnswerAI = async (question: string, correctAnswer: stri
   for (let i = 0; i <= retries; i++) {
     try {
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-lite',
+        model: GEMINI_MODEL,
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
         config: { 
           responseMimeType: "application/json",
@@ -988,7 +1018,7 @@ export const generateSpeech = async (text: string) => {
   const ai = getAIInstance();
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash-lite",
+      model: GEMINI_MODEL,
       contents: [{ parts: [{ text }] }],
       config: {
         responseModalities: [Modality.AUDIO],
@@ -1042,10 +1072,8 @@ export const generateClassExamQuestions = async (
   neededMCQ: number,
   neededOpen: number,
   neededTF: number,
-  retries = 2
+  retries = 1
 ) => {
-  const ai = getAIInstance();
-  
   const temarioStr = temario.map((m, i) => `${i + 1}. ${m.titulo}: ${m.contenido}`).join('\n');
 
   const total = neededMCQ + neededOpen + neededTF;
@@ -1079,27 +1107,65 @@ export const generateClassExamQuestions = async (
   }`;
 
   const systemInstruction = "Eres un generador de JSON estricto. Tu tarea es generar preguntas de evaluacion para estudiantes.";
+  const contents = [{ role: 'user', parts: [{ text: prompt }] }];
+  const examConfig = {
+    systemInstruction,
+    responseMimeType: 'application/json',
+    temperature: 0.3,
+    maxOutputTokens: 8192,
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: {
+        preguntas: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              tipo: { type: Type.STRING, enum: ['open', 'multiple_choice', 'true_false'] },
+              pregunta: { type: Type.STRING },
+              respuesta_correcta: { type: Type.STRING },
+              explicacion: { type: Type.STRING },
+              opciones: { type: Type.ARRAY, items: { type: Type.STRING } }
+            },
+            required: ['tipo', 'pregunta', 'respuesta_correcta']
+          }
+        }
+      },
+      required: ['preguntas']
+    }
+  };
 
-  for (let i = 0; i <= retries; i++) {
-    try {
-      // Use callGeminiApi to route through OpenRouter (avoids direct Google API 404)
-      const contents = [{ role: 'user', parts: [{ text: prompt }] }];
-      const response = await callGeminiApi('generateClassExamQuestions', contents, {
-        systemInstruction,
-        responseMimeType: 'application/json',
-        temperature: 0.3
-      });
-      const cleaned = cleanJsonResponse(response.text || '');
-      const examData = JSON.parse(cleaned);
-      if (examData?.preguntas && Array.isArray(examData.preguntas)) {
-        return examData.preguntas;
+  const originalProvider = getAiProvider();
+  const providers = [originalProvider, ...EXAM_PROVIDER_CHAIN]
+    .filter((p, i, arr) => arr.indexOf(p) === i);
+
+  let lastError: any;
+  for (const provider of providers) {
+    for (let i = 0; i <= retries; i++) {
+      try {
+        console.log(`Generando examen con proveedor ${provider} (intento ${i + 1}/${retries + 1})`);
+        const response = await callGeminiApi('generateClassExamQuestions', contents, examConfig, provider);
+        const cleaned = cleanJsonResponse(response.text || '');
+        if (!cleaned) throw new Error('Respuesta vacía de la IA');
+        const examData = JSON.parse(cleaned);
+        const preguntas = Array.isArray(examData?.preguntas) ? examData.preguntas : (Array.isArray(examData) ? examData : null);
+        if (preguntas && preguntas.length > 0) {
+          if (provider !== originalProvider) {
+            setAiProvider(provider);
+          }
+          return preguntas;
+        }
+        throw new Error('El JSON no contiene preguntas válidas');
+      } catch (e) {
+        lastError = e;
+        const msg = String(e);
+        console.warn(`Fallo generando examen con ${provider}:`, msg.slice(0, 300));
+        const isGone = /404|NOT_FOUND|no longer available|model_not_found|Unknown provider/i.test(msg);
+        const isRetryable = /429|503|UNAVAILABLE|quota|AbortError|tardó más/i.test(msg);
+        if (isGone || !isRetryable || i === retries) break;
+        await new Promise(r => setTimeout(r, 1500 * (i + 1)));
       }
-      // Sometimes the response is a direct array
-      if (Array.isArray(examData)) return examData;
-    } catch (e) {
-      if (i === retries) throw e;
-      await new Promise(r => setTimeout(r, 2000));
     }
   }
-  return [];
+  throw lastError || new Error('No se pudieron generar las preguntas del examen con ningún proveedor de IA.');
 };

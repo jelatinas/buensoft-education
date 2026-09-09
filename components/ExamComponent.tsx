@@ -140,6 +140,7 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
         const neededMCQ = Math.max(0, 4 - mcqCount);
         const neededOpen = Math.max(0, 4 - openCount);
         const neededTF = Math.max(0, 2 - tfCount);
+        let aiError: any = null;
 
         if (neededMCQ > 0 || neededOpen > 0 || neededTF > 0) {
           console.log(`Generando déficit con AI: ${neededMCQ} MCQ, ${neededOpen} Open, ${neededTF} TF`);
@@ -158,6 +159,7 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
               freshQuestions = [...freshQuestions, ...savedQuestions];
             }
           } catch (e) {
+            aiError = e;
             console.error("Error generando nuevas preguntas con IA:", e);
           }
         }
@@ -185,7 +187,8 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
         if (finalQuestions.length > 0) {
           setQuestions(finalQuestions as any[]); // Cast to any array to bypass strict type checking temporarily
         } else {
-          setErrorDetails("No se encontraron preguntas en la base de datos ni se pudieron generar nuevas. Por favor, intenta de nuevo.");
+          const detail = aiError?.message ? ` Detalle de IA: ${String(aiError.message).slice(0, 280)}` : '';
+          setErrorDetails("No se encontraron preguntas en la base de datos ni se pudieron generar nuevas. Por favor, intenta de nuevo." + detail);
         }
         
       } catch (error: any) {
