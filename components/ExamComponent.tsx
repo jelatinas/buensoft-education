@@ -13,7 +13,7 @@ import {
   saveNewClassExamQuestions,
   saveStudentExamAnswer
 } from '../storage2';
-import { evaluateOpenAnswerAI, shuffleOptions, evaluateBatchOpenAnswersAI, OpenAnswerEvaluation, BatchOpenAnswerResult, generateClassExamQuestions } from '../geminiService2';
+import { evaluateOpenAnswerAI, shuffleOptions, evaluateBatchOpenAnswersAI, OpenAnswerEvaluation, BatchOpenAnswerResult, generateClassExamQuestions, normalizeExamQuestion, extractOpcionStrings, NormalizedExamQuestion } from '../geminiService2';
 import { Loader2, CheckCircle2, XCircle, ArrowRight, ArrowLeft, Send, BrainCircuit, RefreshCcw, Clock } from 'lucide-react';
 // @ignore
 import ReactMarkdown from 'react-markdown';
@@ -94,10 +94,15 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
   };
 
   useEffect(() => {
-    if (!microtemas || microtemas.length === 0) {
-      console.log("Esperando microtemas...");
-      return;
-    }
+    const examMicrotemas = (microtemas && microtemas.length > 0)
+      ? microtemas
+      : [{ id: 'fallback', titulo: lesson.title, contenido: `Lección ${lesson.title} de la materia ${lesson.subject}.` } as Microtema];
+
+    const toAnswerable = (rows: any[]): NormalizedExamQuestion[] => {
+      return rows
+        .map((q) => normalizeExamQuestion(q))
+        .filter((q): q is NormalizedExamQuestion => !!q);
+    };
 
     const initExam = async () => {
       setIsLoading(true);
@@ -119,19 +124,16 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
 
       
       console.log(`Iniciando examen (Intento ${retryCount + 1}) para lección DB ID:`, lessonDbId);
-      console.log("Microtemas recibidos:", microtemas);
+      console.log("Microtemas recibidos:", examMicrotemas);
       
       try {
         if (!lessonDbId) {
           throw new Error("No se proporcionó un ID de lección válido.");
         }
 
-        if (!lessonDbId) {
-          throw new Error("No se proporcionó un ID de lección válido.");
-        }
-
-        let freshQuestions = await getUnansweredQuestionsForClass(studentId, lessonDbId);
-        console.log(`Se encontraron ${freshQuestions.length} preguntas sin responder en la BD.`);
+        const rawQuestions = await getUnansweredQuestionsForClass(studentId, lessonDbId);
+        let freshQuestions = toAnswerable(rawQuestions);
+        console.log(`Se encontraron ${rawQuestions.length} preguntas en BD, ${freshQuestions.length} utilizables (con opciones válidas).`);
 
         const mcqCount = freshQuestions.filter(q => q.tipo === 'multiple_choice').length;
         const openCount = freshQuestions.filter(q => q.tipo === 'open').length;
@@ -145,18 +147,19 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
         if (neededMCQ > 0 || neededOpen > 0 || neededTF > 0) {
           console.log(`Generando déficit con AI: ${neededMCQ} MCQ, ${neededOpen} Open, ${neededTF} TF`);
           try {
-            const aiPreguntas = await generateClassExamQuestions(lesson.subject, lesson.title, microtemas, neededMCQ, neededOpen, neededTF);
-            if (aiPreguntas && aiPreguntas.length > 0) {
-              const toSave = aiPreguntas.map((q: any) => ({
+            const aiPreguntas = await generateClassExamQuestions(lesson.subject, lesson.title, examMicrotemas, neededMCQ, neededOpen, neededTF);
+            const validAi = toAnswerable(aiPreguntas || []);
+            if (validAi.length > 0) {
+              const toSave = validAi.map((q) => ({
                 class_id: lessonDbId,
                 tipo: q.tipo,
                 pregunta: q.pregunta,
                 respuesta_correcta: q.respuesta_correcta,
                 explicacion: q.explicacion,
-                opciones: q.opciones || null
+                opciones: q.tipo === 'multiple_choice' ? q.opciones : null
               }));
               const savedQuestions = await saveNewClassExamQuestions(toSave);
-              freshQuestions = [...freshQuestions, ...savedQuestions];
+              freshQuestions = [...freshQuestions, ...toAnswerable(savedQuestions)];
             }
           } catch (e) {
             aiError = e;
@@ -164,8 +167,8 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
           }
         }
         
-        // Ensure exactly 10 questions of correct types
-        const finalMCQ = freshQuestions.filter(q => q.tipo === 'multiple_choice').slice(0, 4);
+        // Ensure exactly 10 questions of correct types, never show MCQ without options
+        const finalMCQ = freshQuestions.filter(q => q.tipo === 'multiple_choice' && (q.opciones?.length || 0) >= 2).slice(0, 4);
         const finalOpen = freshQuestions.filter(q => q.tipo === 'open').slice(0, 4);
         const finalTF = freshQuestions.filter(q => q.tipo === 'true_false').slice(0, 2);
         
@@ -184,11 +187,11 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
 
         console.log(`Seleccionadas ${finalQuestions.length} preguntas para el examen de acreditación.`);
         
-        if (finalQuestions.length > 0) {
-          setQuestions(finalQuestions as any[]); // Cast to any array to bypass strict type checking temporarily
+        if (finalQuestions.length >= 4) {
+          setQuestions(finalQuestions as any[]);
         } else {
           const detail = aiError?.message ? ` Detalle de IA: ${String(aiError.message).slice(0, 280)}` : '';
-          setErrorDetails("No se encontraron preguntas en la base de datos ni se pudieron generar nuevas. Por favor, intenta de nuevo." + detail);
+          setErrorDetails("No se encontraron preguntas utilizables (las de opción múltiple deben incluir respuestas). Intenta de nuevo." + detail);
         }
         
       } catch (error: any) {
@@ -698,6 +701,11 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
   }
 
   const currentQuestion = questions[currentQuestionIndex];
+  const currentOptions = currentQuestion ? extractOpcionStrings(currentQuestion.opciones) : [];
+  const canAnswerCurrent = !currentQuestion
+    || currentQuestion.tipo === 'true_false'
+    || currentQuestion.tipo === 'open'
+    || currentOptions.length > 0;
 
   if (!currentQuestion) {
     return (
@@ -778,9 +786,15 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
           </ReactMarkdown>
         </div>
 
-        {currentQuestion.tipo === 'multiple_choice' && (
+        {currentQuestion.tipo === 'multiple_choice' && currentOptions.length === 0 && (
+          <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-2xl border border-amber-100 text-sm font-bold text-amber-800 dark:text-amber-200">
+            Esta pregunta no tiene opciones de respuesta. Pasa a la siguiente para no quedarte sin tiempo.
+          </div>
+        )}
+
+        {currentQuestion.tipo === 'multiple_choice' && currentOptions.length > 0 && (
           <div className="grid gap-4">
-            {currentQuestion.opciones?.map((oStr: string, i: number) => {
+            {currentOptions.map((oStr: string, i: number) => {
               const isSelected = answers[String(currentQuestion.id)] === oStr;
               const isCorrect = oStr === currentQuestion.respuesta_correcta;
               
@@ -862,6 +876,16 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
           </div>
         )}
 
+        {currentQuestion.tipo !== 'multiple_choice' && currentQuestion.tipo !== 'true_false' && currentQuestion.tipo !== 'open' && (
+          <textarea
+            value={answers[String(currentQuestion.id)] || ""}
+            onChange={(e) => handleAnswerChange(String(currentQuestion.id), e.target.value)}
+            placeholder="Escribe tu respuesta aquí..."
+            disabled={isShowingFeedback}
+            className="w-full h-40 p-6 rounded-2xl border-2 bg-indigo-50/30 dark:bg-indigo-900/20 text-indigo-900 dark:text-white font-medium placeholder-indigo-300 focus:border-indigo-600 focus:ring-0 transition-all resize-none border-indigo-50 dark:border-indigo-900"
+          />
+        )}
+
         {currentQuestion.tipo === 'open' && (
           <div className="space-y-4">
             <div className="bg-amber-50 dark:bg-amber-900/20 p-4 rounded-2xl border border-amber-100 dark:border-amber-800 flex items-center gap-3">
@@ -922,9 +946,9 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
       <div className="shrink-0 pt-4 mt-auto">
         <button
           onClick={handleNext}
-        disabled={(!answers[String(currentQuestion.id)] && !isShowingFeedback) || isEvaluating}
+        disabled={((!answers[String(currentQuestion.id)] && canAnswerCurrent) && !isShowingFeedback) || isEvaluating}
         className={`w-full py-5 rounded-2xl font-black uppercase shadow-xl transition-all flex items-center justify-center space-x-3 ${
-          (!answers[String(currentQuestion.id)] && !isShowingFeedback) || isEvaluating
+          ((!answers[String(currentQuestion.id)] && canAnswerCurrent) && !isShowingFeedback) || isEvaluating
             ? 'bg-indigo-100 text-indigo-300 cursor-not-allowed'
             : 'bg-indigo-600 text-white hover:bg-indigo-700'
         }`}

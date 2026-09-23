@@ -29,9 +29,9 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
 
 export const autoUpdateLessonStatuses = async (username: string) => {
   try {
-    await supabase.from('student_lessons').update({ lesson_status: 'Aprobada', completed: true }).eq('student_username', username).gte('grade', 6);
-    await supabase.from('student_lessons').update({ lesson_status: 'Reprobada', completed: false }).eq('student_username', username).gt('grade', 0).lt('grade', 6);
-    await supabase.from('student_lessons').update({ lesson_status: 'En Progreso' }).eq('student_username', username).or('grade.is.null,grade.eq.0').gt('valid_interactions_count', 0);
+    await supabase.from('student_lessons').update({ lesson_status: 'Aprobada', completed: true }).eq('student_username', username).gte('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
+    await supabase.from('student_lessons').update({ lesson_status: 'Reprobada', completed: false }).eq('student_username', username).gt('grade', 0).lt('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
+    await supabase.from('student_lessons').update({ lesson_status: 'En Progreso' }).eq('student_username', username).or('grade.is.null,grade.eq.0').gt('valid_interactions_count', 0).in('lesson_status', ['Pendiente']);
   } catch (err) {
     console.error("Error en auto-actualización de estatus:", err);
   }
@@ -823,7 +823,7 @@ export const getClassIdFromLesson = async (lesson: Lesson): Promise<string | nul
     const { data: materiaData } = await supabase
       .from('courses')
       .select('id')
-      .eq('nombre', subject)
+      .ilike('nombre', subject)
       .limit(1);
     
     if (!materiaData || materiaData.length === 0) {
@@ -844,19 +844,29 @@ export const getClassIdFromLesson = async (lesson: Lesson): Promise<string | nul
     const { data: classData } = await supabase
       .from('classes')
       .select('id')
-      .eq('titulo', lessonNumber)
       .eq('course_id', materiaId)
+      .ilike('titulo', String(lessonNumber))
       .limit(1);
 
     if (!classData || classData.length === 0) {
-       // Insert leccion
-       const { data: newClass, error: lecErr } = await supabase
+       const { data: byTitle } = await supabase
          .from('classes')
-         .insert([{ titulo: lessonNumber, course_id: materiaId, admin_id: ADMIN_UUID }])
          .select('id')
-         .single();
-       if (lecErr || !newClass) return null;
-       classId = newClass.id;
+         .eq('course_id', materiaId)
+         .ilike('titulo', topic)
+         .limit(1);
+
+       if (byTitle && byTitle.length > 0) {
+         classId = byTitle[0].id;
+       } else {
+         const { data: newClass, error: lecErr } = await supabase
+           .from('classes')
+           .insert([{ titulo: lessonNumber, course_id: materiaId, admin_id: ADMIN_UUID }])
+           .select('id')
+           .single();
+         if (lecErr || !newClass) return null;
+         classId = newClass.id;
+       }
     } else {
        classId = classData[0].id;
     }

@@ -26,6 +26,116 @@ export function shuffleOptions<T>(array: T[]): T[] {
   }
   return shuffled;
 }
+
+export type NormalizedExamTipo = 'multiple_choice' | 'true_false' | 'open';
+
+export interface NormalizedExamQuestion {
+  id?: string;
+  class_id?: string | number;
+  tipo: NormalizedExamTipo;
+  pregunta: string;
+  respuesta_correcta: string;
+  explicacion?: string;
+  opciones?: string[];
+}
+
+export const normalizeExamTipo = (raw: unknown): NormalizedExamTipo | null => {
+  const value = String(raw || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .replace(/[\s\-]+/g, '_');
+
+  if (['multiple_choice', 'multiplechoice', 'mcq', 'opcion_multiple', 'opciones_multiples', 'choice', 'quiz'].includes(value)) {
+    return 'multiple_choice';
+  }
+  if (['true_false', 'truefalse', 'verdadero_falso', 'verdaderofalso', 'boolean', 'vf', 'true_or_false'].includes(value)) {
+    return 'true_false';
+  }
+  if (['open', 'abierta', 'abierto', 'written', 'open_ended', 'openended', 'respuesta_abierta', 'essay'].includes(value)) {
+    return 'open';
+  }
+  return null;
+};
+
+export const extractOpcionStrings = (value: unknown): string[] => {
+  if (value == null || value === '') return [];
+
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.startsWith('[') || trimmed.startsWith('{')) {
+      try {
+        return extractOpcionStrings(JSON.parse(trimmed));
+      } catch {
+        return trimmed ? [trimmed] : [];
+      }
+    }
+    if (trimmed.includes('\n')) {
+      return trimmed
+        .split('\n')
+        .map(s => s.replace(/^[A-Da-d][\)\.\-]\s*/, '').trim())
+        .filter(Boolean);
+    }
+    return trimmed ? [trimmed] : [];
+  }
+
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      if (typeof item === 'string') return item.trim();
+      if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>;
+        return String(obj.opcion || obj.text || obj.option || obj.label || obj.respuesta || obj.value || '').trim();
+      }
+      return '';
+    })
+    .filter(Boolean);
+};
+
+export const normalizeExamQuestion = (raw: any): NormalizedExamQuestion | null => {
+  if (!raw || typeof raw !== 'object') return null;
+
+  const pregunta = String(raw.pregunta || raw.question || '').trim();
+  if (!pregunta) return null;
+
+  const tipo = normalizeExamTipo(raw.tipo || raw.type);
+  if (!tipo) return null;
+
+  let respuesta = String(raw.respuesta_correcta || raw.correct_answer || raw.answer || '').trim();
+  const explicacion = raw.explicacion || raw.explanation || '';
+  let opciones = extractOpcionStrings(raw.opciones ?? raw.options ?? raw.choices);
+
+  if (tipo === 'true_false') {
+    const lower = respuesta.toLowerCase();
+    if (['true', 'verdadero', 'v', '1'].includes(lower)) respuesta = 'VERDADERO';
+    else if (['false', 'falso', 'f', '0'].includes(lower)) respuesta = 'FALSO';
+    if (!respuesta) return null;
+  }
+
+  if (tipo === 'multiple_choice') {
+    if (respuesta && !opciones.some(o => o.trim() === respuesta)) {
+      const match = opciones.find(o => o.trim().toLowerCase() === respuesta.toLowerCase());
+      if (match) respuesta = match;
+      else opciones = [...opciones, respuesta];
+    }
+    if (opciones.length < 2 || !respuesta) return null;
+  }
+
+  if (tipo === 'open' && !respuesta) return null;
+
+  return {
+    id: raw.id != null ? String(raw.id) : undefined,
+    class_id: raw.class_id,
+    tipo,
+    pregunta,
+    respuesta_correcta: respuesta,
+    explicacion,
+    opciones: tipo === 'multiple_choice' ? opciones : undefined
+  };
+};
+
 const getAIInstance = () => {
   const studentKey = typeof window !== 'undefined' ? localStorage.getItem('student_gemini_api_key') : null;
   const apiKey = studentKey || process.env.API_KEY || process.env.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY;
@@ -1072,9 +1182,12 @@ export const generateClassExamQuestions = async (
   neededMCQ: number,
   neededOpen: number,
   neededTF: number,
-  retries = 1
+  retries = 2
 ) => {
-  const temarioStr = temario.map((m, i) => `${i + 1}. ${m.titulo}: ${m.contenido}`).join('\n');
+  const temarioStr = temario.map((m, i) => {
+    const content = String(m.contenido || '').slice(0, 400);
+    return `${i + 1}. ${m.titulo}: ${content}`;
+  }).join('\n');
 
   const total = neededMCQ + neededOpen + neededTF;
   if (total === 0) return [];
@@ -1101,7 +1214,7 @@ export const generateClassExamQuestions = async (
         "pregunta": "Texto de la pregunta",
         "respuesta_correcta": "La respuesta correcta (para true_false debe ser VERDADERO o FALSO)",
         "explicacion": "Explicacion de por que es correcta",
-        "opciones": ["opcion 1", "opcion 2", "opcion 3", "opcion 4"] // Solo para multiple_choice
+        "opciones": ["opcion 1", "opcion 2", "opcion 3", "opcion 4"] // Obligatorio: 4 strings en multiple_choice, [] en open y true_false
       }
     ]
   }`;
@@ -1127,7 +1240,7 @@ export const generateClassExamQuestions = async (
               explicacion: { type: Type.STRING },
               opciones: { type: Type.ARRAY, items: { type: Type.STRING } }
             },
-            required: ['tipo', 'pregunta', 'respuesta_correcta']
+            required: ['tipo', 'pregunta', 'respuesta_correcta', 'opciones']
           }
         }
       },
@@ -1149,20 +1262,34 @@ export const generateClassExamQuestions = async (
         if (!cleaned) throw new Error('Respuesta vacía de la IA');
         const examData = JSON.parse(cleaned);
         const preguntas = Array.isArray(examData?.preguntas) ? examData.preguntas : (Array.isArray(examData) ? examData : null);
-        if (preguntas && preguntas.length > 0) {
-          if (provider !== originalProvider) {
-            setAiProvider(provider);
-          }
-          return preguntas;
+        if (!preguntas || preguntas.length === 0) {
+          throw new Error('El JSON no contiene preguntas válidas');
         }
-        throw new Error('El JSON no contiene preguntas válidas');
+
+        const normalized = preguntas
+          .map((q: any) => normalizeExamQuestion(q))
+          .filter((q: NormalizedExamQuestion | null): q is NormalizedExamQuestion => !!q);
+
+        const gotMCQ = normalized.filter(q => q.tipo === 'multiple_choice').length;
+        const gotOpen = normalized.filter(q => q.tipo === 'open').length;
+        const gotTF = normalized.filter(q => q.tipo === 'true_false').length;
+
+        if (gotMCQ < neededMCQ || gotOpen < neededOpen || gotTF < neededTF) {
+          throw new Error(`IA devolvió preguntas incompletas o sin opciones (MCQ ${gotMCQ}/${neededMCQ}, Open ${gotOpen}/${neededOpen}, TF ${gotTF}/${neededTF})`);
+        }
+
+        if (provider !== originalProvider) {
+          setAiProvider(provider);
+        }
+        return normalized;
       } catch (e) {
         lastError = e;
         const msg = String(e);
         console.warn(`Fallo generando examen con ${provider}:`, msg.slice(0, 300));
         const isGone = /404|NOT_FOUND|no longer available|model_not_found|Unknown provider/i.test(msg);
-        const isRetryable = /429|503|UNAVAILABLE|quota|AbortError|tardó más/i.test(msg);
-        if (isGone || !isRetryable || i === retries) break;
+        const isIncomplete = /incompletas|sin opciones|no contiene preguntas|Respuesta vacía|JSON/i.test(msg);
+        const isRetryable = /429|503|UNAVAILABLE|quota|AbortError|tardó más/i.test(msg) || isIncomplete;
+        if (isGone || (!isRetryable && !isIncomplete) || i === retries) break;
         await new Promise(r => setTimeout(r, 1500 * (i + 1)));
       }
     }

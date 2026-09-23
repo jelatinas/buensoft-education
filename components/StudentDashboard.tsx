@@ -32,6 +32,11 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const [isLoading, setIsLoading] = useState(true);
   const [isTransferring, setIsTransferring] = useState(false);
   const [quickEditLessonId, setQuickEditLessonId] = useState<string | null>(null);
+  const [quickEditDraft, setQuickEditDraft] = useState<{
+    lesson_status: Lesson['lesson_status'];
+    completedTopicsCount: number;
+    grade: number;
+  } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [auditStatuses, setAuditStatuses] = useState<Record<string, { hasGeminiLesson: boolean, hasExamAttempts: boolean }>>({});
 
@@ -309,6 +314,39 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
     try { await updateLessonInStudent(user.username, { ...lesson, ...updates }); await fetchData(); } catch (err) { alert(err instanceof Error ? err.message : String(err)); } finally { setIsUpdating(false); }
   };
 
+  const openQuickEdit = (lesson: Lesson) => {
+    setQuickEditLessonId(String(lesson.id));
+    setQuickEditDraft({
+      lesson_status: lesson.lesson_status || 'Pendiente',
+      completedTopicsCount: lesson.completedTopicsCount || 0,
+      grade: lesson.grade || 0
+    });
+  };
+
+  const handleSaveQuickEdit = async (lesson: Lesson) => {
+    if (!quickEditDraft || isUpdating) return;
+    const temas = Math.max(0, Math.min(10, Number(quickEditDraft.completedTopicsCount) || 0));
+    const creditos = Math.max(0, Math.min(10, Number(quickEditDraft.grade) || 0));
+    const status = quickEditDraft.lesson_status || 'Pendiente';
+    setIsUpdating(true);
+    try {
+      await updateLessonInStudent(user.username, {
+        ...lesson,
+        lesson_status: status,
+        completedTopicsCount: temas,
+        grade: creditos,
+        completed: status === 'Aprobada' || status === 'Completada'
+      });
+      await fetchData();
+      setQuickEditLessonId(null);
+      setQuickEditDraft(null);
+    } catch (err) {
+      alert(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsUpdating(false);
+    }
+  };
+
   const handleDeleteLesson = async (lessonId: string) => {
     if (!isAdminView || !confirm("¿Eliminar?")) return;
     setIsUpdating(true); try { await deleteLessonFromStudent(lessonId); await fetchData(); } catch (err) { alert(err instanceof Error ? err.message : String(err)); } finally { setIsUpdating(false); }
@@ -401,14 +439,25 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   
                   return (
                     <div key={lesson.id} className={`p-6 rounded-[2.5rem] border-4 bg-white dark:bg-indigo-950 border-indigo-50 dark:border-indigo-800 relative ${isSelected ? 'ring-4 ring-amber-400' : ''}`}>
-                      {isAdminView && isSelected && (
-                        <div className="absolute inset-0 bg-white/95 dark:bg-indigo-900/95 z-50 flex flex-col p-4 space-y-3 rounded-[2.5rem]">
-                           <div className="flex justify-between items-center"><span className="text-[10px] font-black text-indigo-400">ADMIN</span><button onClick={()=>setQuickEditLessonId(null)} className="text-red-500">✕</button></div>
-                           <select value={status} onChange={(e)=>handleQuickUpdate(lesson, {lesson_status: e.target.value as any})} className="bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100">
+                      {isAdminView && isSelected && quickEditDraft && (
+                        <div className="absolute inset-0 bg-white/95 dark:bg-indigo-900/95 z-50 flex flex-col p-4 space-y-2 rounded-[2.5rem] overflow-y-auto">
+                           <div className="flex justify-between items-center"><span className="text-[10px] font-black text-indigo-400">ADMIN</span><button onClick={()=>{setQuickEditLessonId(null); setQuickEditDraft(null);}} className="text-red-500">✕</button></div>
+                           <label className="text-[8px] font-black text-indigo-400 uppercase">Estatus</label>
+                           <select value={quickEditDraft.lesson_status} onChange={(e)=>setQuickEditDraft({...quickEditDraft, lesson_status: e.target.value as Lesson['lesson_status']})} className="bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100">
                               <option value="Pendiente">Pendiente</option><option value="En Progreso">En Progreso</option><option value="Aprobada">Aprobada</option><option value="Reprobada">Reprobada</option><option value="Completada">Completada</option>
                            </select>
-                           <input type="number" value={lesson.grade || ''} onChange={(e)=>handleQuickUpdate(lesson, {grade: parseInt(e.target.value)||0})} className="bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100" placeholder="Nota" />
-                           <div className="grid grid-cols-2 gap-2"><button onClick={()=>handleClearHistory(lesson)} className="py-2 bg-amber-100 text-amber-600 text-[9px] font-black rounded-xl uppercase">Limpiar 🫧</button><button onClick={()=>{setQuickEditLessonId(null); onEditLessonDetails?.(lesson)}} className="py-2 bg-indigo-100 text-indigo-600 text-[9px] font-black rounded-xl uppercase">Editar ✏️</button></div>
+                           <div className="grid grid-cols-2 gap-2">
+                             <div>
+                               <label className="text-[8px] font-black text-indigo-400 uppercase">Temas (0-10)</label>
+                               <input type="number" min={0} max={10} value={quickEditDraft.completedTopicsCount} onChange={(e)=>setQuickEditDraft({...quickEditDraft, completedTopicsCount: parseInt(e.target.value)||0})} className="w-full bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100" />
+                             </div>
+                             <div>
+                               <label className="text-[8px] font-black text-indigo-400 uppercase">Créditos (0-10)</label>
+                               <input type="number" min={0} max={10} value={quickEditDraft.grade} onChange={(e)=>setQuickEditDraft({...quickEditDraft, grade: parseInt(e.target.value)||0})} className="w-full bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100" />
+                             </div>
+                           </div>
+                           <button onClick={()=>handleSaveQuickEdit(lesson)} disabled={isUpdating} className="w-full py-2 bg-indigo-600 text-white text-[9px] font-black rounded-xl uppercase disabled:opacity-50">{isUpdating ? 'Guardando...' : 'Guardar cambios'}</button>
+                           <div className="grid grid-cols-2 gap-2"><button onClick={()=>handleClearHistory(lesson)} className="py-2 bg-amber-100 text-amber-600 text-[9px] font-black rounded-xl uppercase">Limpiar 🫧</button><button onClick={()=>{setQuickEditLessonId(null); setQuickEditDraft(null); onEditLessonDetails?.(lesson)}} className="py-2 bg-indigo-100 text-indigo-600 text-[9px] font-black rounded-xl uppercase">Editar ✏️</button></div>
                            <button onClick={()=>handleDeleteLesson(String(lesson.id))} className="w-full py-2 bg-red-50 text-red-500 text-[9px] font-black rounded-xl uppercase">Eliminar 🗑️</button>
                         </div>
                       )}
@@ -418,7 +467,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                       >
                         <div className="flex justify-between items-center mb-4">
                           <span className={`${ui.color} ${ui.textColor} text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-wider`}>{lesson.subject}</span>
-                          {isAdminView && !isSelected && <button onClick={(e)=>{e.stopPropagation(); setQuickEditLessonId(String(lesson.id))}} className="w-8 h-8 rounded-full bg-slate-100 text-indigo-400 hover:bg-indigo-600 hover:text-white">⚙️</button>}
+                          {isAdminView && !isSelected && <button onClick={(e)=>{e.stopPropagation(); openQuickEdit(lesson)}} className="w-8 h-8 rounded-full bg-slate-100 text-indigo-400 hover:bg-indigo-600 hover:text-white">⚙️</button>}
                         </div>
                         <h4 className="text-lg font-black text-indigo-900 dark:text-white uppercase mb-4 leading-tight group-hover:text-indigo-600 transition-colors flex justify-between items-center">
                           <span>🧠 {lesson.title}</span>

@@ -807,7 +807,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.10</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.11</div>
           <div className={`prose dark:prose-invert max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={MarkdownComponents}>{displayText}</ReactMarkdown>
           </div>
@@ -1003,7 +1003,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
            <ExamComponent 
               lesson={lesson} 
               lessonDbId={masterLeccionIdRef.current || lesson.id.toString()}
-              microtemas={lesson.microtemas}
+              microtemas={lesson.microtemas || []}
               studentId={user.id || user.username} 
               studentUsername={user.username}
               chatHistory={messages}
