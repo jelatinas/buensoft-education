@@ -935,7 +935,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     // stripping only the special tag markers. This prevents text from "jumping" or disappearing.
     const cleanTags = (raw: string) => raw
       .replace(/\[DATA_LOGICA\][\s\S]*$/g, '')         // cut off at [DATA_LOGICA]
-      .replace(/\[EXPLICACION\]|\[\/EXPLICACION\]/g, '') // strip [EXPLICACION] markers
+      .replace(/\[\/?(EXPLICACION|EXPRESSION|EXPLANATION)\]/gi, '')
       .replace(/\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
       .replace(/\[TEMAS_COMPLETADOS:\s*\d+\]/ig, '')
       .replace(/\*\*Draft\*\*|\*\*Draft/g, '')

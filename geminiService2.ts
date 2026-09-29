@@ -315,7 +315,8 @@ export const generateTeacherResponse = async (
   const cardRule = `Dentro de [EXPLICACION] incluye SIEMPRE estas dos etiquetas, en este orden, cada una con UNA sola oración:
 [IDEA]la idea central[/IDEA]
 [EJEMPLO]un ejemplo de la vida diaria[/EJEMPLO]
-No uses estas etiquetas fuera de [EXPLICACION].`;
+No uses estas etiquetas fuera de [EXPLICACION].
+La etiqueta de apertura se escribe EXACTAMENTE [EXPLICACION]. Nunca uses [EXPRESSION], [EXPLANATION] ni ninguna variante en inglés.`;
 
   let prompt = "";
   // Check if we hit the limit for resume interactions (assume feedbackContext contains a signal or we pass a flag)
