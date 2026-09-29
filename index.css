@@ -66,6 +66,23 @@
 .mcq-yes { animation: mcq-yes 0.45s ease; }
 .mcq-no { animation: mcq-no 0.45s ease; }
 .game-in { animation: game-in 0.35s ease; }
+@keyframes score-fly {
+  0% { opacity: 0; transform: translateY(10px) scale(0.8); }
+  35% { opacity: 1; transform: translateY(-6px) scale(1.15); }
+  100% { opacity: 0; transform: translateY(-26px) scale(1); }
+}
+@keyframes walker-hop {
+  0% { transform: translateY(0); }
+  40% { transform: translateY(-7px); }
+  100% { transform: translateY(0); }
+}
+@keyframes slot-pop {
+  from { transform: scale(0.55); opacity: 0.3; }
+  to { transform: scale(1); opacity: 1; }
+}
+.score-fly { animation: score-fly 0.9s ease forwards; }
+.walker-hop { animation: walker-hop 0.55s ease; }
+.slot-pop { animation: slot-pop 0.28s ease; }
 .classroom-playfield {
   background-image: radial-gradient(circle, rgba(99, 102, 241, 0.16) 1px, transparent 1px);
   background-size: 18px 18px;

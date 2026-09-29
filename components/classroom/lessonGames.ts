@@ -82,17 +82,38 @@ function sentenceWords(text: string): string[] {
     .slice(0, 16);
 }
 
-function orderWindow(words: string[]): string[] | null {
-  if (words.length < 3) return null;
-  const size = Math.min(6, words.length);
-  if (words.length <= 6) return words;
-  for (let i = 0; i <= words.length - size; i++) {
-    const slice = words.slice(i, i + size);
-    const start = plain(slice[0]);
-    const end = plain(slice[slice.length - 1]);
-    if (!STOP.has(start) && !STOP.has(end)) return slice;
+function tokenizeClause(text: string): string[] {
+  return text
+    .replace(/\s+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .map(w => w.replace(/^[^0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+|[^0-9A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+$/g, ''))
+    .filter(w => w.length > 1 || /^(y|o|e|a)$/i.test(w));
+}
+
+export function tokensForOrder(text: string): string[] | null {
+  const clean = studentFacingText(text);
+  if (!clean) return null;
+  const clauses = clean.split(/[.!?;:\n,]/).map(part => part.trim()).filter(Boolean);
+  for (const clause of clauses) {
+    const words = tokenizeClause(clause);
+    if (words.length >= 3 && words.length <= 6) return words;
+    if (words.length > 6) return words.slice(0, 6);
   }
-  return words.slice(0, size);
+  return null;
+}
+
+export function streakMultiplier(consecutiveWins: number): number {
+  if (consecutiveWins >= 3) return 3;
+  if (consecutiveWins >= 2) return 2;
+  return 1;
+}
+
+export const CLASS_GOAL = 500;
+
+export function orderIsCorrect(chosen: string[], answer: string[]): boolean {
+  if (chosen.length !== answer.length || answer.length === 0) return false;
+  return chosen.every((word, index) => sameText(word, answer[index]));
 }
 
 function makeBlank(words: string[]) {
@@ -145,7 +166,7 @@ export function buildLessonGame(
   const playWords = sentenceWords(studentFacingText(topic?.contenido));
   const flash = makeFlash(mcq);
   const blank = playWords.length >= 3 ? makeBlank(playWords) : null;
-  const order = orderWindow(playWords);
+  const order = tokensForOrder(topic?.contenido || '');
   const pick = makePick(topicTitle, siblingTitles);
   const slot = ((topicIndex % 3) + 3) % 3;
   const base = { id, topicTitle, topicNumber };

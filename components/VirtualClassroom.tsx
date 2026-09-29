@@ -9,7 +9,7 @@ import { XCircle, Loader2, Send, CheckCircle2 } from 'lucide-react';
 import ExamComponent from './ExamComponent';
 import ClassroomHud from './classroom/ClassroomHud';
 import LessonMinigame from './classroom/LessonMinigame';
-import { buildLessonGame, extractLessonCards, studentFacingText, type LessonGame } from './classroom/lessonGames';
+import { buildLessonGame, extractLessonCards, studentFacingText, streakMultiplier, type LessonGame } from './classroom/lessonGames';
 import type { MascotMood } from './classroom/TeacherMascot';
 
 interface VirtualClassroomProps {
@@ -110,6 +110,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [mcqSelections, setMcqSelections] = useState<Record<number, { selected: string; correct: string }>>({});
   const [combo, setCombo] = useState(0);
   const [gameScore, setGameScore] = useState(0);
+  const [winStreak, setWinStreak] = useState(0);
+  const [scoreBurst, setScoreBurst] = useState<{ id: number; amount: number } | null>(null);
   const [mood, setMood] = useState<MascotMood>('idle');
   const [activeGame, setActiveGame] = useState<LessonGame | null>(null);
   const [preparingGame, setPreparingGame] = useState(false);
@@ -987,7 +989,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.12</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.13</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
@@ -1143,6 +1145,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         combo={combo}
         score={gameScore}
         mood={mood}
+        winStreak={winStreak}
+        scoreBurst={scoreBurst}
       />
 
       <div className="flex-1 relative flex flex-col overflow-hidden bg-sky-50 dark:bg-indigo-950/50">
@@ -1171,11 +1175,15 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
              <LessonMinigame
                key={activeGame.id}
                game={activeGame}
+               multiplier={streakMultiplier(winStreak + 1)}
                onFinish={(points, won) => {
                  const pending = continueAfterGameRef.current;
                  continueAfterGameRef.current = null;
                  setActiveGame(null);
+                 setWinStreak(current => won ? current + 1 : 0);
                  setGameScore(s => s + points);
+                 setScoreBurst({ id: Date.now(), amount: points });
+                 window.setTimeout(() => setScoreBurst(null), 900);
                  setMood(won ? 'happy' : 'oops');
                  if (pending) void resumeClassTurn(pending);
                }}

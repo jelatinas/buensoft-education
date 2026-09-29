@@ -1,8 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { LessonGame, sameText } from './lessonGames';
+import { LessonGame, orderIsCorrect, sameText } from './lessonGames';
+
+type WordChip = { id: string; text: string };
 
 type LessonMinigameProps = {
   game: LessonGame;
+  multiplier?: number;
   onFinish: (points: number, won: boolean) => void;
 };
 
@@ -15,9 +18,13 @@ function shuffle<T>(list: T[]): T[] {
   return copy;
 }
 
-const LessonMinigame: React.FC<LessonMinigameProps> = ({ game, onFinish }) => {
-  const [pool, setPool] = useState<string[]>(() => game.kind === 'order' ? shuffle(game.words) : []);
-  const [chosen, setChosen] = useState<string[]>([]);
+function chipsOf(words: string[]): WordChip[] {
+  return words.map((text, index) => ({ id: `${index}:${text}`, text }));
+}
+
+const LessonMinigame: React.FC<LessonMinigameProps> = ({ game, multiplier = 1, onFinish }) => {
+  const [pool, setPool] = useState<WordChip[]>(() => game.kind === 'order' ? shuffle(chipsOf(game.words)) : []);
+  const [chosen, setChosen] = useState<WordChip[]>([]);
   const [mistakes, setMistakes] = useState(0);
   const [shake, setShake] = useState(false);
   const [left, setLeft] = useState(game.kind === 'flash' ? game.seconds : 0);
@@ -36,7 +43,8 @@ const LessonMinigame: React.FC<LessonMinigameProps> = ({ game, onFinish }) => {
   }, [game.kind, left, phase]);
 
   const finish = (earned: number, won: boolean) => {
-    setPoints(earned);
+    const total = won ? earned * multiplier : earned;
+    setPoints(total);
     setPhase(won ? 'ok' : 'no');
   };
 
@@ -56,9 +64,19 @@ const LessonMinigame: React.FC<LessonMinigameProps> = ({ game, onFinish }) => {
         ? 'Elige la palabra que falta.'
         : '¿Cuál tema acabas de terminar?';
 
+  const takeChip = (chip: WordChip, fromPool: boolean) => {
+    if (fromPool) {
+      setPool(prev => prev.filter(item => item.id !== chip.id));
+      setChosen(prev => prev.some(item => item.id === chip.id) ? prev : [...prev, chip]);
+      return;
+    }
+    setChosen(prev => prev.filter(item => item.id !== chip.id));
+    setPool(prev => prev.some(item => item.id === chip.id) ? prev : [...prev, chip]);
+  };
+
   const checkOrder = () => {
     if (game.kind !== 'order') return;
-    const ok = chosen.length === game.words.length && chosen.every((w, i) => sameText(w, game.words[i]));
+    const ok = orderIsCorrect(chosen.map(chip => chip.text), game.words);
     if (ok) {
       finish(Math.max(30, 100 - mistakes * 25), true);
       return;
@@ -82,16 +100,16 @@ const LessonMinigame: React.FC<LessonMinigameProps> = ({ game, onFinish }) => {
       <p className="text-[10px] font-black uppercase tracking-widest text-amber-600">Tema {game.topicNumber} desbloqueado</p>
       <h3 className="text-2xl font-black mt-1">{title}</h3>
       <p className="text-sm font-bold text-indigo-400 mt-1">{game.topicTitle}</p>
-      <p className="text-sm font-medium mt-3 mb-4">{hint}</p>
+      <p className="text-sm font-medium mt-3 mb-4">{hint}{multiplier > 1 ? ` Acierto x${multiplier}.` : ''}</p>
 
       {phase === 'play' && game.kind === 'flash' && (
         <div className="mb-4">
-          <div className="flex justify-between text-[10px] font-black uppercase text-indigo-400 mb-1">
-            <span>Tiempo</span>
-            <span>{left}s</span>
+          <div className="flex justify-between text-[10px] font-black uppercase mb-1">
+            <span className="text-indigo-400">Tiempo</span>
+            <span className={left <= 3 ? 'text-red-600 animate-pulse' : 'text-indigo-400'}>{left}s</span>
           </div>
           <div className="h-2 rounded-full bg-indigo-100 overflow-hidden">
-            <div className="h-full bg-amber-400" style={{ width: `${(left / game.seconds) * 100}%` }} />
+            <div className={`h-full ${left <= 3 ? 'bg-red-500' : 'bg-amber-400'}`} style={{ width: `${(left / game.seconds) * 100}%` }} />
           </div>
           <p className="font-black text-lg mt-4">{game.question}</p>
           <div className="grid gap-2 mt-3">
@@ -106,34 +124,32 @@ const LessonMinigame: React.FC<LessonMinigameProps> = ({ game, onFinish }) => {
 
       {phase === 'play' && game.kind === 'order' && (
         <div>
-          <div className={`min-h-16 rounded-2xl border-2 border-dashed border-indigo-200 bg-indigo-50 px-3 py-3 flex flex-wrap gap-2 ${shake ? 'mcq-no' : ''}`}>
-            {chosen.length === 0 && <span className="text-indigo-300 text-sm font-bold">Tu frase aparece aquí</span>}
-            {chosen.map((w, i) => (
-              <button
-                key={`${w}-${i}`}
-                type="button"
-                onClick={() => {
-                  setChosen(prev => prev.filter((_, idx) => idx !== i));
-                  setPool(prev => [...prev, w]);
-                }}
-                className="px-3 py-1.5 rounded-full bg-indigo-600 text-white text-sm font-bold"
-              >
-                {w}
-              </button>
-            ))}
+          <div className={`grid gap-2 ${shake ? 'mcq-no' : ''}`} style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(4.5rem, 1fr))' }}>
+            {game.words.map((_, index) => {
+              const chip = chosen[index];
+              return (
+                <button
+                  key={chip?.id || `slot-${index}`}
+                  type="button"
+                  disabled={!chip}
+                  onClick={() => chip && takeChip(chip, false)}
+                  className={`min-h-[3.5rem] rounded-xl border-2 px-1 py-2 text-xs font-black leading-tight ${chip ? 'bg-indigo-600 text-white border-indigo-600' : 'border-dashed border-indigo-200 text-indigo-300 bg-indigo-50'}`}
+                >
+                  <span className="block text-[10px] opacity-70">{index + 1}</span>
+                  {chip ? <span key={chip.id} className="slot-pop block">{chip.text}</span> : '·'}
+                </button>
+              );
+            })}
           </div>
           <div className="flex flex-wrap gap-2 mt-3">
-            {pool.map((w, i) => (
+            {pool.map(chip => (
               <button
-                key={`${w}-${i}`}
+                key={chip.id}
                 type="button"
-                onClick={() => {
-                  setPool(prev => prev.filter((_, idx) => idx !== i));
-                  setChosen(prev => [...prev, w]);
-                }}
+                onClick={() => takeChip(chip, true)}
                 className="px-3 py-1.5 rounded-full bg-white border-2 border-indigo-200 text-sm font-bold hover:border-indigo-500"
               >
-                {w}
+                {chip.text}
               </button>
             ))}
           </div>
