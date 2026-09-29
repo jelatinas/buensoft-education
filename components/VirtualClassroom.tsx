@@ -7,6 +7,10 @@ import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
 import { XCircle, Loader2, Send, CheckCircle2 } from 'lucide-react';
 import ExamComponent from './ExamComponent';
+import ClassroomHud from './classroom/ClassroomHud';
+import LessonMinigame from './classroom/LessonMinigame';
+import { buildLessonGame, extractLessonCards, type LessonGame } from './classroom/lessonGames';
+import type { MascotMood } from './classroom/TeacherMascot';
 
 interface VirtualClassroomProps {
   lesson: Lesson;
@@ -16,6 +20,12 @@ interface VirtualClassroomProps {
   isAdminAudit?: boolean;
   isEmbedded?: boolean;
 }
+
+type PendingClassTurn = {
+  teacherContext: string;
+  newCompletedTopics: number;
+  newResumeInteractions: number;
+};
 
 const MarkdownComponents = {
   a: ({ node, ...props }: any) => (
@@ -98,6 +108,12 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   // MCQ selections: track which option was chosen per message index
   const [mcqSelections, setMcqSelections] = useState<Record<number, { selected: string; correct: string }>>({});
+  const [combo, setCombo] = useState(0);
+  const [gameScore, setGameScore] = useState(0);
+  const [mood, setMood] = useState<MascotMood>('idle');
+  const [activeGame, setActiveGame] = useState<LessonGame | null>(null);
+  const continueAfterGameRef = useRef<PendingClassTurn | null>(null);
+  const activeGameRef = useRef(false);
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const masterLeccionIdRef = useRef<string | null>(null);
@@ -157,8 +173,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
          setIsPaused(false);
       }
       
-      if (!showExam) {
+      if (!showExam && !activeGameRef.current) {
         inactivityTimerRef.current = setTimeout(() => {
+          if (activeGameRef.current) return;
           setIsPaused(true);
           setSecondsElapsed(prev => Math.max(0, prev - 180));
         }, 180000); // 3 minutes of inactivity -> pause
@@ -169,7 +186,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     
     const handleVisibilityChange = () => {
       if (document.hidden) {
-         blurTimeoutRef.current = setTimeout(() => setIsPaused(true), 10000);
+         blurTimeoutRef.current = setTimeout(() => {
+           if (!activeGameRef.current) setIsPaused(true);
+         }, 10000);
       } else {
          if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
          setIsPaused(false);
@@ -200,6 +219,15 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
     return () => clearInterval(timer);
   }, [isPaused, showExam, isAdminAudit]);
+
+  useEffect(() => {
+    activeGameRef.current = !!activeGame;
+  }, [activeGame]);
+
+  useEffect(() => {
+    if (activeGame) return;
+    if (isLoading || messages.some(m => m.isStreaming)) setMood('write');
+  }, [messages, isLoading, activeGame]);
 
   useEffect(() => {
     const initChat = async () => {
@@ -392,6 +420,98 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
   };
 
+  const resumeClassTurn = async (pending: PendingClassTurn) => {
+    const { teacherContext, newCompletedTopics, newResumeInteractions } = pending;
+    const targetSeconds = (lesson.durationMinutes || 0) * 60;
+    const isTimeMet = secondsRef.current >= targetSeconds && secondsRef.current >= penaltySecondsRequired;
+    const isReviewMode = !isTimeMet && newCompletedTopics >= 10;
+    const topicIndex = newCompletedTopics < 10 ? newCompletedTopics : 9;
+    const currentTopic = lesson.microtemas?.[topicIndex];
+
+    lastAskedMCQExplanationRef.current = '';
+    setLoadingText('El profesor está respondiendo...');
+    setMood('write');
+
+    const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: 'El profesor está escribiendo...' }], timestamp: new Date().toISOString(), isStreaming: true };
+    setMessages(prev => [...prev, streamingMsg]);
+    setIsLoading(false);
+
+    let responseText = '';
+    let currentProvider = aiProvider;
+    let providerIndex = FALLBACK_CHAIN.indexOf(currentProvider);
+    if (providerIndex === -1) providerIndex = 0;
+
+    try {
+      for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
+        try {
+          responseText = await generateTeacherResponse(
+            lesson, user, currentTopic, topicIndex, isReviewMode, teacherContext,
+            (partial) => {
+              setMessages(prev => {
+                const idx = prev.findIndex(m => m.isStreaming);
+                if (idx === -1) return prev;
+                const next = [...prev];
+                next[idx] = { ...next[idx], parts: [{ text: partial }] };
+                return next;
+              });
+            }
+          );
+          break;
+        } catch (err) {
+          console.warn(`${currentProvider} failed, attempting fallback...`, err);
+          const nextIndex = (providerIndex + 1) % FALLBACK_CHAIN.length;
+          currentProvider = FALLBACK_CHAIN[nextIndex];
+          providerIndex = nextIndex;
+          setFallbackMessage(`El modelo tardó demasiado. Cambiando a ${currentProvider.toUpperCase()}...`);
+          setLocalAiProvider(currentProvider);
+          setAiProvider(currentProvider);
+          if (attempt === FALLBACK_CHAIN.length - 1) {
+            setFallbackMessage(null);
+            throw err;
+          }
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      setTimeout(() => setFallbackMessage(null), 4000);
+
+      const aiText = processAIResponse(responseText || '');
+      const aiMsg: ChatMessage = { role: 'model', parts: [{ text: aiText }], timestamp: new Date().toISOString() };
+      setMessages(prev => {
+        const newMsgs = [...prev.slice(0, -1), aiMsg];
+        saveProgress(newMsgs, newCompletedTopics, secondsRef.current);
+        return newMsgs;
+      });
+
+      const sessionRequirementMet = isResumingRef.current
+        ? newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED
+        : true;
+      const isReadyForExam = (newCompletedTopics >= 10) && (
+        isResumingRef.current ? sessionRequirementMet : (isTimeMet && sessionRequirementMet)
+      );
+      if (isReadyForExam) {
+        setMessages(prev => [...prev, {
+          role: 'model',
+          isExamReady: true,
+          parts: [{ text: "## ⏳ PREGUNTAS DEL EXAMEN LISTAS\nHemos preparado tu evaluación personalizada. Cuando estés listo, presiona el botón para comenzar." }],
+          timestamp: new Date().toISOString()
+        } as any]);
+        setShowExam(true);
+      }
+    } catch (err) {
+      console.error(err);
+      const errorMsg: ChatMessage = {
+        role: 'model',
+        parts: [{ text: 'Ocurrió un error con el modelo de IA. Los servidores están saturados.' }],
+        timestamp: new Date().toISOString(),
+        isError: true,
+      };
+      setMessages(prev => [...prev.filter(m => !m.isStreaming), errorMsg]);
+    } finally {
+      setIsLoading(false);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    }
+  };
+
   // Core response generator - shared between handleSend (WRITTEN) and handleMCQSelect
   const generateAndAppendTeacherResponse = async (
     studentAnswer: string,
@@ -402,6 +522,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
     const isTimeMet = secondsRef.current >= targetSeconds && secondsRef.current >= penaltySecondsRequired;
     
+    const previousTopics = completedTopicsRef.current;
     let newCompletedTopics = completedTopicsRef.current;
     let newCorrectAnswers = correctAnswersRef.current;
     let isTopicCompleted = false;
@@ -446,11 +567,18 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       
       if (evalResult.aprobado) {
         newCorrectAnswers += 1;
+        setCombo(c => c + 1);
         if (newCorrectAnswers >= 2) {
           newCompletedTopics = Math.min(completedTopicsRef.current + 1, 10);
           newCorrectAnswers = 0;
           isTopicCompleted = true;
+          setMood('party');
+        } else {
+          setMood('happy');
         }
+      } else {
+        setCombo(0);
+        setMood('oops');
       }
       
       setCorrectAnswersForTopic(newCorrectAnswers);
@@ -542,6 +670,32 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
        setShowExam(true);
        return; // SKIP GEMINI API
+    }
+
+    const topicAdvanced = isTopicCompleted && newCompletedTopics > previousTopics;
+    if (topicAdvanced) {
+      const finishedTopic = lesson.microtemas?.[newCompletedTopics - 1];
+      const queued = preloadedMCQs[0];
+      const mcqForGame = queued?.question && Array.isArray(queued.options)
+        ? { question: String(queued.question), options: queued.options.map((o: string) => String(o)), correct: String(queued.correct || '') }
+        : null;
+      if (mcqForGame) setPreloadedMCQs(prev => prev.slice(1));
+
+      const bridge: ChatMessage = {
+        role: 'model',
+        parts: [{ text: `Tema ${newCompletedTopics} listo. Mini reto desbloqueado.` }],
+        timestamp: new Date().toISOString(),
+      };
+      const bridged = [...currentMessages, bridge];
+      setMessages(bridged);
+      void saveProgress(bridged, newCompletedTopics, secondsRef.current);
+
+      continueAfterGameRef.current = { teacherContext, newCompletedTopics, newResumeInteractions };
+      const titles = (lesson.microtemas || []).map(m => m.titulo).filter(Boolean);
+      setMood('party');
+      setActiveGame(buildLessonGame(finishedTopic, newCompletedTopics - 1, mcqForGame, titles));
+      setIsLoading(false);
+      return;
     }
 
     // INSTANT PRELOADED MCQ CHECK
@@ -660,7 +814,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   // Handle MCQ option click - visual feedback inline, NO user message bubble
   const handleMCQSelect = async (opt: string, correctAnswer: string, messageIndex: number) => {
-    if (isLoading || isPaused || isAdminAudit) return;
+    if (isLoading || isPaused || isAdminAudit || activeGame) return;
     
     // BULLETPROOF NORMALIZATION: strip all spaces, punctuation, and special characters. 
     // Only compare the core letters and numbers to avoid any mismatch.
@@ -696,7 +850,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   // Handle written/text answer - adds user message bubble
   const handleSend = async (manualText?: string) => {
     const userText = manualText || input.trim() || inputRef.current?.value.trim() || '';
-    if (!userText || isLoading || isPaused) return;
+    if (!userText || isLoading || isPaused || activeGame) return;
 
     setInput('');
     if (inputRef.current) inputRef.current.value = '';
@@ -788,9 +942,10 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       .trim();
 
     const explanation = cleanTags(text);
-
-    // Show placeholder only if streaming hasn't produced any visible text yet
-    const displayText = msg.isStreaming && !explanation.trim() ? 'El profesor está escribiendo...' : explanation;
+    const cards = extractLessonCards(explanation);
+    const showCards = !msg.isStreaming && !!(cards.idea && cards.example);
+    const proseSource = showCards ? cards.rest : explanation.replace(/\[\/?(IDEA|EJEMPLO)\]/gi, '');
+    const displayText = msg.isStreaming && !proseSource.trim() ? 'El profesor está escribiendo...' : proseSource;
 
     let questionData: any = null;
     if (dataMatch) {
@@ -807,13 +962,32 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.11</div>
-          <div className={`prose dark:prose-invert max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
-             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={MarkdownComponents}>{displayText}</ReactMarkdown>
-          </div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.12</div>
+          {(displayText || showCards) && (
+            <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
+              {!!displayText && (
+                <div className="prose dark:prose-invert max-w-none">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={MarkdownComponents}>{displayText}</ReactMarkdown>
+                </div>
+              )}
+              {showCards && (
+                <div className="grid gap-3 mt-4">
+                  <div className="rounded-2xl bg-indigo-50 dark:bg-indigo-950 border-2 border-indigo-100 dark:border-indigo-700 px-4 py-3">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-1">Idea</p>
+                    <p className="text-sm font-bold leading-snug">{cards.idea}</p>
+                  </div>
+                  <div className="rounded-2xl bg-amber-50 dark:bg-amber-950/30 border-2 border-amber-100 dark:border-amber-800 px-4 py-3">
+                    <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 mb-1">Ejemplo</p>
+                    <p className="text-sm font-bold leading-snug">{cards.example}</p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {questionData && questionData.question && !msg.isStreaming && (
              <div className="mt-6 pt-4 border-t-2 border-indigo-50 dark:border-indigo-800">
+               <p className="text-[10px] font-black uppercase tracking-widest text-indigo-400 mb-2">Reto</p>
                <p className="font-black text-lg mb-4">{questionData.question}</p>
                {questionData.type === 'MCQ' && questionData.options && (
                  <div className="grid gap-2">
@@ -858,13 +1032,20 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                         btnClass += "bg-white dark:bg-indigo-950 border-indigo-200 dark:border-indigo-700 hover:border-indigo-500 dark:hover:border-indigo-400";
                      }
 
+                     const pop = !hasAnsweredMCQ;
+                     const celebrate = hasAnsweredMCQ && aiFeedbackExists && isCorrectOpt;
+                     const miss = hasAnsweredMCQ && aiFeedbackExists && isSelected && !isCorrectOpt;
                      return (
                        <button 
                          key={i}
                          onClick={() => handleMCQSelect(opt, questionData.correct, index)}
-                         disabled={!isLastMessage || isLoading || isPaused || isAdminAudit || hasAnsweredMCQ}
-                         className={btnClass + " flex items-center gap-3 disabled:cursor-default"}
+                         disabled={!isLastMessage || isLoading || isPaused || isAdminAudit || hasAnsweredMCQ || !!activeGame}
+                         style={pop ? { animation: 'mcq-pop 0.4s ease both', animationDelay: `${i * 60}ms` } : undefined}
+                         className={btnClass + (celebrate ? ' mcq-yes' : '') + (miss ? ' mcq-no' : '') + " flex items-center gap-3 disabled:cursor-default"}
                        >
+                         <span className={`w-7 h-7 rounded-full text-xs font-black flex items-center justify-center shrink-0 ${hasAnsweredMCQ && isSelected ? 'bg-white/25' : 'bg-indigo-100 dark:bg-indigo-800 text-indigo-700 dark:text-indigo-100'}`}>
+                           {String.fromCharCode(65 + i)}
+                         </span>
                          {icon}
                          <span>{opt}</span>
                        </button>
@@ -873,7 +1054,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                  </div>
                )}
                {questionData.type === 'WRITTEN' && isLastMessage && !isAdminAudit && !hasAnsweredMCQ && (
-                 <p className="text-xs text-indigo-400 font-bold uppercase tracking-widest animate-pulse mt-2">Escribe tu respuesta abajo 👇</p>
+                 <p className="text-xs text-indigo-400 font-bold uppercase tracking-widest animate-pulse mt-2">Tu turno: escribe la respuesta abajo</p>
                )}
              </div>
           )}
@@ -911,8 +1092,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
             <div>
              <h2 className="text-sm font-black uppercase truncate max-w-[200px] sm:max-w-md">{lesson.title}</h2>
              <p className="text-[10px] font-bold opacity-80 uppercase flex flex-wrap items-center gap-2 mt-1">
-               <span>Temas completados: {completedTopics} / 10</span>
-               {isRetrying && secondsElapsed < penaltySecondsRequired ? <span>| Repaso req: {PENALTY_MINUTES} min</span> : null}
+               {isRetrying && secondsElapsed < penaltySecondsRequired ? <span>Repaso req: {PENALTY_MINUTES} min</span> : null}
                {isResumingRef.current && completedTopics >= 10 && resumeInteractions < RESUME_INTERACTIONS_REQUIRED && (
                  <span className="bg-amber-400/30 text-amber-200 px-2 py-0.5 rounded-full text-[9px] font-black tracking-widest border border-amber-400/40">
                    Interacciones para examen: {resumeInteractions}/{RESUME_INTERACTIONS_REQUIRED}
@@ -932,10 +1112,18 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         </button>
       </header>
 
-      <div className="flex-1 relative flex flex-col overflow-hidden bg-sky-50 dark:bg-indigo-950/50">
-         <div className="flex-1 overflow-y-auto px-[4%] py-8 custom-scrollbar">
+      <ClassroomHud
+        completedTopics={completedTopics}
+        stars={correctAnswersForTopic}
+        combo={combo}
+        score={gameScore}
+        mood={mood}
+      />
 
-            {useMemo(() => messages.map((m, i) => renderMessage(m, i)), [messages, mcqSelections, isLoading, showExam, examStarted])}
+      <div className="flex-1 relative flex flex-col overflow-hidden bg-sky-50 dark:bg-indigo-950/50">
+         <div className="classroom-playfield flex-1 overflow-y-auto px-[4%] py-8 custom-scrollbar">
+
+            {useMemo(() => messages.map((m, i) => renderMessage(m, i)), [messages, mcqSelections, isLoading, showExam, examStarted, activeGame])}
             {isLoading && !messages.some(m => m.isStreaming) && (
               <div className="flex justify-start w-full mb-6">
                  <div className="bg-white/60 dark:bg-indigo-900/40 p-4 rounded-2xl border-2 border-indigo-50 dark:border-indigo-800 flex items-center space-x-3">
@@ -946,6 +1134,23 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
             )}
             <div ref={messagesEndRef} />
          </div>
+
+         {activeGame && !isAdminAudit && (
+           <div className="absolute inset-0 z-40 bg-indigo-950/75 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
+             <LessonMinigame
+               key={activeGame.id}
+               game={activeGame}
+               onFinish={(points, won) => {
+                 const pending = continueAfterGameRef.current;
+                 continueAfterGameRef.current = null;
+                 setActiveGame(null);
+                 setGameScore(s => s + points);
+                 setMood(won ? 'happy' : 'oops');
+                 if (pending) void resumeClassTurn(pending);
+               }}
+             />
+           </div>
+         )}
 
          {!isAdminAudit && (
            <div className="p-4 bg-white dark:bg-indigo-900 border-t-4 border-indigo-50 dark:border-indigo-800">
@@ -963,7 +1168,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                      }
                    }
                  }}
-                 disabled={isLoading || isPaused || showExam}
+                 disabled={isLoading || isPaused || showExam || !!activeGame}
                  placeholder="Escribe tu respuesta..."
                  className="flex-1 px-6 py-4 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold outline-none focus:border-indigo-500 disabled:opacity-50"
                />
@@ -975,7 +1180,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                      setTimeout(() => handleSend(), 0);
                    }
                  }}
-                 disabled={isLoading || isPaused || showExam}
+                 disabled={isLoading || isPaused || showExam || !!activeGame}
                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white p-4 rounded-2xl shadow-lg transition-all"
                >
                  <Send size={24} />
@@ -985,7 +1190,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
          )}
       </div>
 
-      {isPaused && !isAdminAudit && !showExam && (
+      {isPaused && !isAdminAudit && !showExam && !activeGame && (
         <div className="absolute inset-0 bg-indigo-900/60 backdrop-blur-md z-[3000] flex items-center justify-center p-6 text-center">
           <div className="bg-white dark:bg-indigo-900 p-10 rounded-[3rem] shadow-2xl animate-in zoom-in duration-300 border-8 border-indigo-50 dark:border-indigo-800">
              <h3 className="text-2xl font-black text-indigo-900 dark:text-white mb-6 uppercase tracking-tight">Estudio Pausado por Inactividad</h3>

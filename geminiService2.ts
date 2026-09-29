@@ -312,6 +312,11 @@ export const generateTeacherResponse = async (
     REGLA DE ORO: TUS EXPLICACIONES DEBEN SER EXTREMADAMENTE BREVES Y CONCISAS (MÁXIMO 50 PALABRAS). VE DIRECTO AL GRANO.
   `;
 
+  const cardRule = `Dentro de [EXPLICACION] incluye SIEMPRE estas dos etiquetas, en este orden, cada una con UNA sola oración:
+[IDEA]la idea central[/IDEA]
+[EJEMPLO]un ejemplo de la vida diaria[/EJEMPLO]
+No uses estas etiquetas fuera de [EXPLICACION].`;
+
   let prompt = "";
   // Check if we hit the limit for resume interactions (assume feedbackContext contains a signal or we pass a flag)
   // Wait, I need to pass resumeInteractions count to this function!
@@ -331,6 +336,7 @@ Instrucciones: ${feedbackContext
   ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal, y formula UNA NUEVA pregunta.`
   : `Haz UNA pregunta de repaso al azar.`}
 IMPORTANTE: La pregunta debe ser OBLIGATORIAMENTE de Opción Múltiple (MCQ).
+${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 ¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION].
 [EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
@@ -354,9 +360,10 @@ INSTRUCCIÓN VITAL:
 4. Después del ejemplo, haz UNA (1) sola pregunta para validar su comprensión.
 
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
+${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 ¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION].
-[EXPLICACION] <Lista de temas, explicación y ejemplo aquí> [/EXPLICACION]
+[EXPLICACION] <Lista de temas, luego [IDEA] y [EJEMPLO]> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      } else {
         // Interacciones subsecuentes
@@ -369,9 +376,10 @@ Si seguimos en el MISMO tema, solo da el feedback y continúa.`
 
 Finalmente, haz UNA (1) sola pregunta para validar su comprensión.
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
+${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 ¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION]. Sé directo, breve y no redundes.
-[EXPLICACION] <Tu explicación/feedback y ejemplo aquí> [/EXPLICACION]
+[EXPLICACION] <Feedback breve, luego [IDEA] y [EJEMPLO]> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      }
   } else {

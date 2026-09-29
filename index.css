@@ -36,3 +36,37 @@
   --color-amber-500: var(--color-orange-500);
   --color-amber-600: var(--color-orange-600);
 }
+
+@keyframes mcq-pop {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes mcq-yes {
+  0% { transform: scale(1); }
+  45% { transform: scale(1.04); }
+  100% { transform: scale(1); }
+}
+@keyframes mcq-no {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(3px); }
+}
+@keyframes star-pop {
+  0% { transform: scale(0.4) rotate(-18deg); }
+  60% { transform: scale(1.2) rotate(8deg); }
+  100% { transform: scale(1) rotate(0); }
+}
+@keyframes game-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.star-pop { animation: star-pop 0.45s ease; }
+.mcq-yes { animation: mcq-yes 0.45s ease; }
+.mcq-no { animation: mcq-no 0.45s ease; }
+.game-in { animation: game-in 0.35s ease; }
+.classroom-playfield {
+  background-image: radial-gradient(circle, rgba(99, 102, 241, 0.16) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
