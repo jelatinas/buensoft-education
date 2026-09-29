@@ -23,6 +23,20 @@ const STOP = new Set([
 
 const EXTRA = ['proceso', 'ejemplo', 'sistema', 'cambio', 'causa', 'efecto', 'parte', 'forma'];
 
+export function isAdminNote(text?: string): boolean {
+  const raw = (text || '').trim();
+  if (!raw) return false;
+  const n = raw.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  if (/\b(pendiente|editalo|editarlo|en bd|por definir|lorem|fixme)\b/.test(n)) return true;
+  if (n.length < 50 && /\b(contenido|borrador|nota interna)\b/.test(n)) return true;
+  return false;
+}
+
+export function studentFacingText(text?: string): string {
+  const raw = (text || '').trim();
+  return isAdminNote(raw) ? '' : raw;
+}
+
 export function sameText(a: string, b: string) {
   const n = (s: string) => s
     .toLowerCase()
@@ -128,9 +142,7 @@ export function buildLessonGame(
   const topicTitle = topic?.titulo?.trim() || 'Este tema';
   const topicNumber = Math.max(1, topicIndex + 1);
   const id = `${topicNumber}-${Date.now()}`;
-  const fromContent = sentenceWords(topic?.contenido || '');
-  const fromTitle = sentenceWords(topic?.titulo || '');
-  const playWords = fromContent.length >= 3 ? fromContent : fromTitle;
+  const playWords = sentenceWords(studentFacingText(topic?.contenido));
   const flash = makeFlash(mcq);
   const blank = playWords.length >= 3 ? makeBlank(playWords) : null;
   const order = orderWindow(playWords);

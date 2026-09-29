@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Lesson, ChatMessage } from '../types';
 import { updateLessonInStudent, getClassChatHistory, saveClassChatHistory, getClassIdFromLesson, getMicrotemas } from '../storage2';
-import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch, getAiProvider, setAiProvider } from '../geminiService2';
+import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch, generateTopicSentence, getAiProvider, setAiProvider } from '../geminiService2';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -9,7 +9,7 @@ import { XCircle, Loader2, Send, CheckCircle2 } from 'lucide-react';
 import ExamComponent from './ExamComponent';
 import ClassroomHud from './classroom/ClassroomHud';
 import LessonMinigame from './classroom/LessonMinigame';
-import { buildLessonGame, extractLessonCards, type LessonGame } from './classroom/lessonGames';
+import { buildLessonGame, extractLessonCards, studentFacingText, type LessonGame } from './classroom/lessonGames';
 import type { MascotMood } from './classroom/TeacherMascot';
 
 interface VirtualClassroomProps {
@@ -112,6 +112,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [gameScore, setGameScore] = useState(0);
   const [mood, setMood] = useState<MascotMood>('idle');
   const [activeGame, setActiveGame] = useState<LessonGame | null>(null);
+  const [preparingGame, setPreparingGame] = useState(false);
   const continueAfterGameRef = useRef<PendingClassTurn | null>(null);
   const activeGameRef = useRef(false);
   
@@ -221,8 +222,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   }, [isPaused, showExam, isAdminAudit]);
 
   useEffect(() => {
-    activeGameRef.current = !!activeGame;
-  }, [activeGame]);
+    activeGameRef.current = !!activeGame || preparingGame;
+  }, [activeGame, preparingGame]);
 
   useEffect(() => {
     if (activeGame) return;
@@ -692,9 +693,33 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
       continueAfterGameRef.current = { teacherContext, newCompletedTopics, newResumeInteractions };
       const titles = (lesson.microtemas || []).map(m => m.titulo).filter(Boolean);
+      const topicIndex = newCompletedTopics - 1;
+      const slot = ((topicIndex % 3) + 3) % 3;
+      const usable = studentFacingText(finishedTopic?.contenido);
+      let playText = usable;
       setMood('party');
-      setActiveGame(buildLessonGame(finishedTopic, newCompletedTopics - 1, mcqForGame, titles));
       setIsLoading(false);
+      if (!(slot === 0 && mcqForGame)) {
+        setPreparingGame(true);
+        try {
+          const sentence = await generateTopicSentence(
+            lesson.subject,
+            lesson.title,
+            finishedTopic?.titulo || lesson.title,
+            usable
+          );
+          if (sentence) playText = sentence;
+        } catch (e) {
+          console.error('No se pudo armar el mini reto', e);
+        }
+        setPreparingGame(false);
+      }
+      setActiveGame(buildLessonGame(
+        { titulo: finishedTopic?.titulo, contenido: playText },
+        topicIndex,
+        mcqForGame,
+        titles
+      ));
       return;
     }
 
@@ -814,7 +839,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   // Handle MCQ option click - visual feedback inline, NO user message bubble
   const handleMCQSelect = async (opt: string, correctAnswer: string, messageIndex: number) => {
-    if (isLoading || isPaused || isAdminAudit || activeGame) return;
+    if (isLoading || isPaused || isAdminAudit || activeGame || preparingGame) return;
     
     // BULLETPROOF NORMALIZATION: strip all spaces, punctuation, and special characters. 
     // Only compare the core letters and numbers to avoid any mismatch.
@@ -850,7 +875,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   // Handle written/text answer - adds user message bubble
   const handleSend = async (manualText?: string) => {
     const userText = manualText || input.trim() || inputRef.current?.value.trim() || '';
-    if (!userText || isLoading || isPaused || activeGame) return;
+    if (!userText || isLoading || isPaused || activeGame || preparingGame) return;
 
     setInput('');
     if (inputRef.current) inputRef.current.value = '';
@@ -1135,8 +1160,14 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
             <div ref={messagesEndRef} />
          </div>
 
-         {activeGame && !isAdminAudit && (
+         {(preparingGame || activeGame) && !isAdminAudit && (
            <div className="absolute inset-0 z-40 bg-indigo-950/75 backdrop-blur-sm p-4 flex items-center justify-center overflow-y-auto">
+             {preparingGame || !activeGame ? (
+               <div className="game-in w-full max-w-lg bg-white text-indigo-950 rounded-[2rem] shadow-2xl p-8 border-4 border-amber-300 text-center">
+                 <p className="text-[10px] font-black uppercase tracking-widest text-amber-600">Mini reto</p>
+                 <p className="text-xl font-black mt-2">Preparando tu reto...</p>
+               </div>
+             ) : (
              <LessonMinigame
                key={activeGame.id}
                game={activeGame}
@@ -1149,6 +1180,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                  if (pending) void resumeClassTurn(pending);
                }}
              />
+             )}
            </div>
          )}
 
@@ -1168,7 +1200,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                      }
                    }
                  }}
-                 disabled={isLoading || isPaused || showExam || !!activeGame}
+                 disabled={isLoading || isPaused || showExam || !!activeGame || preparingGame}
                  placeholder="Escribe tu respuesta..."
                  className="flex-1 px-6 py-4 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 bg-indigo-50 dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold outline-none focus:border-indigo-500 disabled:opacity-50"
                />
@@ -1180,7 +1212,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                      setTimeout(() => handleSend(), 0);
                    }
                  }}
-                 disabled={isLoading || isPaused || showExam || !!activeGame}
+                 disabled={isLoading || isPaused || showExam || !!activeGame || preparingGame}
                  className="bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white p-4 rounded-2xl shadow-lg transition-all"
                >
                  <Send size={24} />
@@ -1190,7 +1222,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
          )}
       </div>
 
-      {isPaused && !isAdminAudit && !showExam && !activeGame && (
+      {isPaused && !isAdminAudit && !showExam && !activeGame && !preparingGame && (
         <div className="absolute inset-0 bg-indigo-900/60 backdrop-blur-md z-[3000] flex items-center justify-center p-6 text-center">
           <div className="bg-white dark:bg-indigo-900 p-10 rounded-[3rem] shadow-2xl animate-in zoom-in duration-300 border-8 border-indigo-50 dark:border-indigo-800">
              <h3 className="text-2xl font-black text-indigo-900 dark:text-white mb-6 uppercase tracking-tight">Estudio Pausado por Inactividad</h3>

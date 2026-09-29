@@ -1,5 +1,6 @@
 import { GoogleGenAI, Type, Modality } from "@google/genai";
 import { ChatMessage, Lesson, Microtema, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante } from "./types";
+import { studentFacingText } from "./components/classroom/lessonGames";
 import { getCachedEvaluation, saveEvaluationToCache } from "./storage2";
 
 export const getAiProvider = () => typeof window !== 'undefined' ? (sessionStorage.getItem('selected_ai_provider') || 'openrouter') : 'openrouter';
@@ -11,7 +12,7 @@ const CEREBRAS_MODEL = 'llama-3.3-70b';
 const EXAM_PROVIDER_CHAIN = ['openrouter', 'gemini', 'cerebras'];
 
 const getActionTimeoutMs = (action: string) => {
-  if (action === 'generateTeacherResponse') return 20000;
+  if (action === 'generateTeacherResponse' || action === 'generateTopicSentence') return 20000;
   if (action === 'generateClassExamQuestions' || action === 'generateExam' || action === 'generateQuestionBank') return 45000;
   return 30000;
 };
@@ -368,7 +369,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
 [DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
      } else {
         // Interacciones subsecuentes
-        prompt = `Tema actual (${topicIndex + 1}/10): "${currentTopic.titulo}". Contenido de referencia: "${currentTopic.contenido}".
+        prompt = `Tema actual (${topicIndex + 1}/10): "${currentTopic.titulo}". Contenido de referencia: "${studentFacingText(currentTopic.contenido) || 'No hay un texto válido guardado. Explica el tema solo a partir del título, sin mencionar notas internas.'}".
 Instrucciones: ${feedbackContext 
   ? `El estudiante acaba de responder a una pregunta. Feedback previo: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que consolide lo aprendido (si era el último tema anterior, felicítalo). 
 Luego, si estamos avanzando a un NUEVO tema (el título del tema actual es nuevo para el estudiante), preséntalo obligatoriamente poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA. 
@@ -554,7 +555,7 @@ export const generateMCQBatch = async (
   if (isReviewMode) {
     promptContext = "El estudiante está en modo de repaso. Genera preguntas al azar sobre cualquier tema de la materia.";
   } else if (currentTopic) {
-    promptContext = `Tema actual: "${currentTopic.titulo}: ${currentTopic.contenido}". Enfócate estrictamente en este tema.`;
+    promptContext = `Tema actual: "${currentTopic.titulo}: ${studentFacingText(currentTopic.contenido) || currentTopic.titulo}". Enfócate estrictamente en este tema. Ignora notas internas como pendientes de edición.`;
   } else {
     promptContext = "Genera preguntas generales sobre la lección.";
   }
@@ -613,6 +614,39 @@ export const generateMCQBatch = async (
   }
 };
 
+export const generateTopicSentence = async (
+  subject: string,
+  lessonTitle: string,
+  topicTitle: string,
+  reference?: string
+) => {
+  const usable = studentFacingText(reference);
+  const prompt = `Materia: "${subject}". Lección: "${lessonTitle}". Tema: "${topicTitle}".
+${usable ? `Texto de apoyo, úsalo solo si de verdad explica el tema: "${usable}".` : 'No hay un texto de apoyo válido. Explica el tema a partir del título.'}
+Escribe UNA sola oración en español, de 8 a 14 palabras, que enseñe este tema a un estudiante.
+La oración debe ser correcta, clara y completa.
+Prohibido mencionar pendientes, bases de datos, edición, borradores o notas internas.
+Devuelve solo JSON: {"oracion":"..."}`;
+
+  const response = await withRetry(() => callGeminiApi('generateTopicSentence', [{ role: 'user', parts: [{ text: prompt }] }], {
+    responseMimeType: "application/json",
+    responseSchema: {
+      type: Type.OBJECT,
+      properties: { oracion: { type: Type.STRING } },
+      required: ["oracion"]
+    }
+  }));
+
+  const cleaned = cleanJsonResponse(response.text || '');
+  const data = JSON.parse(cleaned);
+  const sentence = String(data.oracion || '').replace(/\s+/g, ' ').trim();
+  if (!sentence || isAdminNoteSentence(sentence)) return '';
+  return sentence;
+};
+
+function isAdminNoteSentence(text: string) {
+  return studentFacingText(text) === '' && text.trim().length > 0;
+}
 
 export const generateQuestionBank = async (subject: string, topic: string) => {
   const ai = getAIInstance();
