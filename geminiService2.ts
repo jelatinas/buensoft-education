@@ -95,6 +95,63 @@ export const extractOpcionStrings = (value: unknown): string[] => {
     .filter(Boolean);
 };
 
+const optionKey = (value: string) => value
+  .toLowerCase()
+  .normalize('NFD')
+  .replace(/[\u0300-\u036f]/g, '')
+  .replace(/[^a-z0-9\s]/g, '')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const editDistance = (a: string, b: string) => {
+  const rows = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  for (let j = 0; j <= b.length; j++) rows[0][j] = j;
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      rows[i][j] = Math.min(rows[i - 1][j] + 1, rows[i][j - 1] + 1, rows[i - 1][j - 1] + cost);
+    }
+  }
+  return rows[a.length][b.length];
+};
+
+const sameOption = (a: string, b: string) => {
+  const left = optionKey(a);
+  const right = optionKey(b);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const longest = Math.max(left.length, right.length);
+  if (longest < 18) return false;
+  return editDistance(left, right) / longest <= 0.12;
+};
+
+export const prepareMultipleChoiceOptions = (rawOptions: string[], rawAnswer: string) => {
+  const cleaned = rawOptions
+    .map(option => option.replace(/^[A-Za-z][\)\.\-]\s*/, '').trim())
+    .filter(Boolean);
+  const kept: string[] = [];
+
+  for (const option of cleaned) {
+    const twinIndex = kept.findIndex(existing => sameOption(existing, option));
+    if (twinIndex === -1) {
+      kept.push(option);
+      continue;
+    }
+    const twin = kept[twinIndex];
+    if (rawAnswer && sameOption(option, rawAnswer) && !sameOption(twin, rawAnswer)) {
+      kept[twinIndex] = option;
+    }
+  }
+
+  const correct = kept.find(option => sameOption(option, rawAnswer));
+  const respuesta = correct || rawAnswer.trim();
+  if (!correct && respuesta) kept.push(respuesta);
+
+  const extras = kept.filter(option => option !== respuesta);
+  const opciones = respuesta ? [respuesta, ...extras].slice(0, 4) : kept.slice(0, 4);
+  return { opciones, respuesta };
+};
+
 export const normalizeExamQuestion = (raw: any): NormalizedExamQuestion | null => {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -116,11 +173,9 @@ export const normalizeExamQuestion = (raw: any): NormalizedExamQuestion | null =
   }
 
   if (tipo === 'multiple_choice') {
-    if (respuesta && !opciones.some(o => o.trim() === respuesta)) {
-      const match = opciones.find(o => o.trim().toLowerCase() === respuesta.toLowerCase());
-      if (match) respuesta = match;
-      else opciones = [...opciones, respuesta];
-    }
+    const prepared = prepareMultipleChoiceOptions(opciones, respuesta);
+    opciones = prepared.opciones;
+    respuesta = prepared.respuesta;
     if (opciones.length < 2 || !respuesta) return null;
   }
 
@@ -1245,7 +1300,7 @@ export const generateClassExamQuestions = async (
   ${temarioStr}
 
   REGLAS CRITICAS:
-  1. PARA OPCION MULTIPLE (multiple_choice): Genera 4 opciones. La correcta debe ser aleatoria (no siempre la A).
+  1. PARA OPCION MULTIPLE (multiple_choice): Genera EXACTAMENTE 4 opciones distintas. Cada opcion debe expresar una idea diferente. Prohibido repetir la respuesta correcta con otras palabras o conjugaciones. La correcta debe ser aleatoria (no siempre la A).
   2. El campo 'tipo' debe ser exactamente 'open', 'multiple_choice' o 'true_false'.
   3. Para 'true_false', la correcta debe ser 'VERDADERO' o 'FALSO'.
   4. El campo 'opciones' DEBE ser un arreglo de strings (textos), NO objetos. Ejemplo: ["Opcion 1", "Opcion 2"]
