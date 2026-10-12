@@ -121,6 +121,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const masterLeccionIdRef = useRef<string | null>(null);
   const isResumingRef = useRef(false);
+  const isLessonFinishedRef = useRef(false);
   // Refs for stable values inside streaming callbacks
   const completedTopicsRef = useRef(completedTopics);
   const correctAnswersRef = useRef(correctAnswersForTopic);
@@ -368,7 +369,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
              } else {
                // Generate welcome + new question
                const targetSeconds = (lesson.durationMinutes || 0) * 60;
-               const minRequiredSeconds = Math.round(targetSeconds * 0.75);
+               const minRequiredSeconds = Math.round(targetSeconds * 0.50);
                const elapsed = lesson.elapsedSeconds || 0;
                const isTimeMet = elapsed >= minRequiredSeconds && elapsed >= penaltySecondsRequired;
                const topicsCount = lesson.completedTopicsCount || 0;
@@ -391,7 +392,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                        topicsCount < totalTopics ? topicsCount : (totalTopics - 1), 
                        isReviewMode, 
                        isReviewMode 
-                         ? "El estudiante acaba de retomar la clase tras una pausa y está en modo de repaso para cumplir por lo menos con el 75% del tiempo asignado antes del examen. Dale la bienvenida y hazle una nueva pregunta de repaso sobre lo aprendido con un ejemplo diferente."
+                         ? "El estudiante acaba de retomar la clase tras una pausa y está en modo de repaso para cumplir por lo menos con el 50% del tiempo asignado antes del examen. Dale la bienvenida y hazle una nueva pregunta de repaso sobre lo aprendido con un ejemplo diferente."
                          : "El estudiante acaba de retomar la clase tras una pausa. Dale una breve y entusiasta bienvenida de vuelta y hazle directamente una nueva pregunta sobre este tema para continuar.",
                        (partial) => {
                          setMessages(prev => {
@@ -457,16 +458,20 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   }, []);
 
   const saveProgress = async (msgs: ChatMessage[], topicsCount: number, time: number) => {
-    if (isAdminAudit) return;
+    if (isAdminAudit || isLessonFinishedRef.current) return;
     try {
-      lesson.completedTopicsCount = topicsCount;
+      const isAlreadyApproved = lesson.lesson_status === 'Aprobada' || lesson.completed || (lesson.grade !== undefined && lesson.grade >= 6);
+      const currentStatus = isAlreadyApproved ? 'Aprobada' : 'En Progreso';
+      const finalTopics = isAlreadyApproved ? Math.max(topicsCount, 10) : topicsCount;
+      lesson.completedTopicsCount = finalTopics;
       lesson.elapsedSeconds = time;
       await updateLessonInStudent(user.username, {
         ...lesson,
-        completedTopicsCount: topicsCount,
+        completedTopicsCount: finalTopics,
         elapsedSeconds: time,
         actualDurationMinutes: Math.ceil(time / 60),
-        lesson_status: lesson.lesson_status === 'Aprobada' ? 'Aprobada' : 'En Progreso'
+        lesson_status: currentStatus,
+        completed: isAlreadyApproved
       });
       if (masterLeccionIdRef.current && msgs.length > 0) {
         await saveClassChatHistory(masterLeccionIdRef.current, user.username, JSON.stringify(msgs));
@@ -478,9 +483,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   // Auto-guardado periódico cada 20 segundos mientras el estudiante está en clase
   useEffect(() => {
-    if (isAdminAudit || showExam) return;
+    if (isAdminAudit || showExam || isLessonFinishedRef.current) return;
     const interval = setInterval(() => {
-      if (messagesRef.current.length > 0 && secondsRef.current > 0) {
+      if (!isLessonFinishedRef.current && messagesRef.current.length > 0 && secondsRef.current > 0) {
         saveProgress(messagesRef.current, completedTopicsRef.current, secondsRef.current);
       }
     }, 20000);
@@ -490,7 +495,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   // Guardado de progreso al salir, cerrar pestaña o desmontar
   useEffect(() => {
     const handleExitSave = () => {
-      if (!isAdminAudit && messagesRef.current.length > 0) {
+      if (!isAdminAudit && !isLessonFinishedRef.current && messagesRef.current.length > 0) {
         saveProgress(messagesRef.current, completedTopicsRef.current, secondsRef.current);
       }
     };
@@ -500,7 +505,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return () => {
       window.removeEventListener('beforeunload', handleExitSave);
       window.removeEventListener('pagehide', handleExitSave);
-      if (!isAdminAudit && messagesRef.current.length > 0) {
+      if (!isAdminAudit && !isLessonFinishedRef.current && messagesRef.current.length > 0) {
         saveProgress(messagesRef.current, completedTopicsRef.current, secondsRef.current);
       }
     };
@@ -509,7 +514,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const resumeClassTurn = async (pending: PendingClassTurn) => {
     const { teacherContext, newCompletedTopics, newResumeInteractions } = pending;
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
-    const minRequiredSeconds = Math.round(targetSeconds * 0.75);
+    const minRequiredSeconds = Math.round(targetSeconds * 0.50);
     const isTimeMet = secondsRef.current >= minRequiredSeconds && secondsRef.current >= penaltySecondsRequired;
     const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
     const isReviewMode = !isTimeMet && newCompletedTopics >= totalTopics;
@@ -606,7 +611,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     customFeedback?: string
   ) => {
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
-    const minRequiredSeconds = Math.round(targetSeconds * 0.75);
+    const minRequiredSeconds = Math.round(targetSeconds * 0.50);
     const isTimeMet = secondsRef.current >= minRequiredSeconds && secondsRef.current >= penaltySecondsRequired;
     const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
     
@@ -775,7 +780,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     if (allTopicsCompleted && !isTimeMet) {
       const remainingSeconds = Math.max(0, minRequiredSeconds - secondsRef.current);
       const remainingMinutes = Math.ceil(remainingSeconds / 60);
-      teacherContext = `${teacherContext} [MODO REPASO: Has terminado todos los temas. Para desbloquear el examen debes cumplir por lo menos con el 75% del tiempo de estudio asignado (faltan aprox. ${remainingMinutes} min). Repasemos con otra pregunta sobre los temas vistos].`;
+      teacherContext = `${teacherContext} [MODO REPASO: Has terminado todos los temas. Para desbloquear el examen debes cumplir por lo menos con el 50% del tiempo de estudio asignado (faltan aprox. ${remainingMinutes} min). Repasemos con otra pregunta sobre los temas vistos].`;
     }
 
     const topicAdvanced = isTopicCompleted && newCompletedTopics > previousTopics;
@@ -1137,7 +1142,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.16</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.17</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
@@ -1268,9 +1273,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
              <h2 className="text-sm font-black uppercase truncate max-w-[200px] sm:max-w-md">{lesson.title}</h2>
              <p className="text-[10px] font-bold opacity-80 uppercase flex flex-wrap items-center gap-2 mt-1">
                {isRetrying && secondsElapsed < penaltySecondsRequired ? <span>Repaso req: {PENALTY_MINUTES} min</span> : null}
-               {completedTopics >= ((lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10) && secondsElapsed < Math.round((lesson.durationMinutes || 0) * 0.75 * 60) && (
+               {completedTopics >= ((lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10) && secondsElapsed < Math.round((lesson.durationMinutes || 0) * 0.50 * 60) && (
                  <span className="bg-amber-400/30 text-amber-200 px-2 py-0.5 rounded-full text-[9px] font-black tracking-widest border border-amber-400/40 animate-pulse">
-                   Modo Repaso (Meta 75%: {Math.ceil((lesson.durationMinutes || 0) * 0.75)} min)
+                   Modo Repaso (Meta 50%: {Math.ceil((lesson.durationMinutes || 0) * 0.50)} min)
                  </span>
                )}
                <span className="bg-white/20 px-2 py-0.5 rounded-full text-[9px] tracking-widest ml-1">{aiProvider}</span>
@@ -1402,21 +1407,34 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
               chatHistory={messages}
               onReady={() => setExamReady(true)}
               onFinish={async (grade) => {
-                if (onLessonAccredited) onLessonAccredited(grade);
+                isLessonFinishedRef.current = true;
+                const isPassed = grade >= 6;
+                const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
+                const finalTopics = isPassed ? Math.max(completedTopicsRef.current, totalTopics) : completedTopicsRef.current;
+                const finalSeconds = Math.max(secondsRef.current, lesson.elapsedSeconds || 0);
+
+                lesson.grade = grade;
+                lesson.completed = isPassed;
+                lesson.lesson_status = isPassed ? 'Aprobada' : 'Reprobada';
+                lesson.completedTopicsCount = finalTopics;
+                lesson.elapsedSeconds = finalSeconds;
+                lesson.actualDurationMinutes = Math.ceil(finalSeconds / 60);
+
                 try {
-                   const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
-                   const finalTopics = Math.max(completedTopicsRef.current, totalTopics);
-                   const finalSeconds = Math.max(secondsRef.current, lesson.elapsedSeconds || 0);
                    await updateLessonInStudent(user.username, {
                      ...lesson, 
                      grade,
                      completedTopicsCount: finalTopics,
                      elapsedSeconds: finalSeconds,
                      actualDurationMinutes: Math.ceil(finalSeconds / 60),
-                     completed: grade >= 6,
-                     lesson_status: grade >= 6 ? 'Aprobada' : 'Reprobada'
+                     completed: isPassed,
+                     lesson_status: isPassed ? 'Aprobada' : 'Reprobada'
                    });
-                } catch(e) {}
+                } catch(e) {
+                   console.error("Error updating lesson in student on finish", e);
+                }
+
+                if (onLessonAccredited) onLessonAccredited(grade);
                 onClose();
               }}
               onClose={() => setShowExam(false)}

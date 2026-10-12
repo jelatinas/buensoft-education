@@ -359,13 +359,15 @@ export const updateLessonInStudent = async (username: string, updatedLesson: Les
   const cleanTopic = updatedLesson.title ? updatedLesson.title.replace(/^[.\s]+/, '') : '';
   const cleanPrompt = updatedLesson.learningPrompt ? updatedLesson.learningPrompt.replace(/^[.\s]+/, '') : null;
 
-  const updateData = {
-    completed: updatedLesson.completed,
+  const isApproved = updatedLesson.lesson_status === 'Aprobada' || updatedLesson.completed || (updatedLesson.grade !== undefined && updatedLesson.grade !== null && updatedLesson.grade >= 6);
+
+  const updateData: any = {
+    completed: isApproved ? true : (updatedLesson.completed || false),
     grade: updatedLesson.grade,
     elapsed_seconds: updatedLesson.elapsedSeconds,
     actual_duration_minutes: updatedLesson.actualDurationMinutes ?? Math.ceil((updatedLesson.elapsedSeconds || 0) / 60),
-    valid_interactions_count: updatedLesson.completedTopicsCount,
-    lesson_status: updatedLesson.lesson_status,
+    valid_interactions_count: isApproved ? Math.max(updatedLesson.completedTopicsCount || 0, 10) : updatedLesson.completedTopicsCount,
+    lesson_status: isApproved ? 'Aprobada' : updatedLesson.lesson_status,
     subject: updatedLesson.subject,
     topic: cleanTopic,
     date: updatedLesson.date,
@@ -720,15 +722,22 @@ export const updateIntentoExamen = async (intentoId: string | number, calificaci
 };
 
 export const updateLessonGradeAndStatus = async (lessonId: string, grade: number) => {
-  const status = grade >= 6 ? 'Aprobada' : 'Reprobada';
-  const completed = grade >= 6;
+  const isPassed = grade >= 6;
+  const status = isPassed ? 'Aprobada' : 'Reprobada';
   
-  const { error } = await supabase.from('student_lessons').update({ 
+  const updateData: any = { 
     grade, 
     lesson_status: status,
-    completed,
+    completed: isPassed,
     credits_transfered: false
-  }).eq('id', lessonId);
+  };
+
+  if (isPassed) {
+    updateData.valid_interactions_count = 10;
+    updateData.date_completed = new Date().toISOString();
+  }
+  
+  const { error } = await supabase.from('student_lessons').update(updateData).eq('id', lessonId);
   
   if (error) throw error;
 };
