@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Lesson, ChatMessage } from '../types';
 import { updateLessonInStudent, getClassChatHistory, saveClassChatHistory, getClassIdFromLesson, getMicrotemas } from '../storage2';
-import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch, generateTopicSentence, getAiProvider, setAiProvider } from '../geminiService2';
+import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch, generateTopicSentence, getAiProvider, setAiProvider, isSimilarQuestion, getAskedQuestionsFromMessages } from '../geminiService2';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -148,10 +148,12 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
     const preload = async () => {
       currentTopicForPreloadRef.current = completedTopics;
-      const isRev = completedTopics >= 10;
+      const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
+      const isRev = completedTopics >= totalTopics;
       const currentTopic = lesson.microtemas?.[currentTopicIndex];
+      const asked = getAskedQuestionsFromMessages(messages);
       try {
-        const mcqs = await generateMCQBatch(lesson, user.username, currentTopic, isRev);
+        const mcqs = await generateMCQBatch(lesson, user.username, currentTopic, isRev, asked);
         if (mcqs && mcqs.length > 0) {
            setPreloadedMCQs(mcqs);
         }
@@ -160,7 +162,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       }
     };
     preload();
-  }, [completedTopics, lesson, user.username, isAdminAudit]);
+  }, [completedTopics, lesson, user.username, isAdminAudit, messages]);
   
   // Rule of 5 min penalty if failed before
   const isRetrying = lesson.lesson_status === 'Reprobada';
@@ -324,11 +326,14 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
              } else {
                // Generate welcome + new question
                const targetSeconds = (lesson.durationMinutes || 0) * 60;
+               const minRequiredSeconds = Math.round(targetSeconds * 0.75);
                const elapsed = lesson.elapsedSeconds || 0;
-               const isTimeMet = elapsed >= targetSeconds && elapsed >= penaltySecondsRequired;
+               const isTimeMet = elapsed >= minRequiredSeconds && elapsed >= penaltySecondsRequired;
                const topicsCount = lesson.completedTopicsCount || 0;
-               const isReviewMode = !isTimeMet && topicsCount >= 10;
-               const currentTopic = lesson.microtemas?.[topicsCount < 10 ? topicsCount : 9];
+               const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
+               const isReviewMode = !isTimeMet && topicsCount >= totalTopics;
+               const currentTopic = lesson.microtemas?.[topicsCount < totalTopics ? topicsCount : (totalTopics - 1)];
+               const askedHistory = getAskedQuestionsFromMessages(history);
 
                const streamingMsg: ChatMessage = { role: 'model', parts: [{ text: 'El profesor está escribiendo...' }], timestamp: new Date().toISOString(), isStreaming: true };
                setMessages([...history, streamingMsg]);
@@ -341,9 +346,11 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                   try {
                     responseText = await generateTeacherResponse(
                        lesson, user, currentTopic,
-                       topicsCount < 10 ? topicsCount : 9, 
+                       topicsCount < totalTopics ? topicsCount : (totalTopics - 1), 
                        isReviewMode, 
-                       "El estudiante acaba de retomar la clase tras una pausa. Dale una breve y entusiasta bienvenida de vuelta y hazle directamente una nueva pregunta sobre este tema para continuar.",
+                       isReviewMode 
+                         ? "El estudiante acaba de retomar la clase tras una pausa y está en modo de repaso para cumplir por lo menos con el 75% del tiempo asignado antes del examen. Dale la bienvenida y hazle una nueva pregunta de repaso sobre lo aprendido con un ejemplo diferente."
+                         : "El estudiante acaba de retomar la clase tras una pausa. Dale una breve y entusiasta bienvenida de vuelta y hazle directamente una nueva pregunta sobre este tema para continuar.",
                        (partial) => {
                          setMessages(prev => {
                             const m = [...prev];
@@ -352,7 +359,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                             }
                             return m;
                          });
-                       }
+                       },
+                       askedHistory
                     );
                     break;
                   } catch (err) {
@@ -426,10 +434,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const resumeClassTurn = async (pending: PendingClassTurn) => {
     const { teacherContext, newCompletedTopics, newResumeInteractions } = pending;
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
-    const isTimeMet = secondsRef.current >= targetSeconds && secondsRef.current >= penaltySecondsRequired;
-    const isReviewMode = !isTimeMet && newCompletedTopics >= 10;
-    const topicIndex = newCompletedTopics < 10 ? newCompletedTopics : 9;
+    const minRequiredSeconds = Math.round(targetSeconds * 0.75);
+    const isTimeMet = secondsRef.current >= minRequiredSeconds && secondsRef.current >= penaltySecondsRequired;
+    const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
+    const isReviewMode = !isTimeMet && newCompletedTopics >= totalTopics;
+    const topicIndex = newCompletedTopics < totalTopics ? newCompletedTopics : (totalTopics - 1);
     const currentTopic = lesson.microtemas?.[topicIndex];
+    const askedQuestions = getAskedQuestionsFromMessages(messages);
 
     lastAskedMCQExplanationRef.current = '';
     setLoadingText('El profesor está respondiendo...');
@@ -457,7 +468,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                 next[idx] = { ...next[idx], parts: [{ text: partial }] };
                 return next;
               });
-            }
+            },
+            askedQuestions
           );
           break;
         } catch (err) {
@@ -485,12 +497,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         return newMsgs;
       });
 
-      const sessionRequirementMet = isResumingRef.current
-        ? newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED
-        : true;
-      const isReadyForExam = (newCompletedTopics >= 10) && (
-        isResumingRef.current ? sessionRequirementMet : (isTimeMet && sessionRequirementMet)
-      );
+      const isReadyForExam = (newCompletedTopics >= totalTopics) && isTimeMet;
       if (isReadyForExam) {
         setMessages(prev => [...prev, {
           role: 'model',
@@ -523,7 +530,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     mcqIsCorrect?: boolean
   ) => {
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
-    const isTimeMet = secondsRef.current >= targetSeconds && secondsRef.current >= penaltySecondsRequired;
+    const minRequiredSeconds = Math.round(targetSeconds * 0.75);
+    const isTimeMet = secondsRef.current >= minRequiredSeconds && secondsRef.current >= penaltySecondsRequired;
+    const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
     
     const previousTopics = completedTopicsRef.current;
     let newCompletedTopics = completedTopicsRef.current;
@@ -572,7 +581,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         newCorrectAnswers += 1;
         setCombo(c => c + 1);
         if (newCorrectAnswers >= 2) {
-          newCompletedTopics = Math.min(completedTopicsRef.current + 1, 10);
+          newCompletedTopics = Math.min(completedTopicsRef.current + 1, totalTopics);
           newCorrectAnswers = 0;
           isTopicCompleted = true;
           setMood('party');
@@ -589,35 +598,17 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       teacherContext = evalResult.retroalimentacion;
     }
 
-    // NEW LOGIC: Bypass time check if 10 topics completed early
-    if (newCompletedTopics >= 10 && !isResumingRef.current) {
-        isResumingRef.current = true;
-        setResumeInteractions(0);
-        resumeInteractionsRef.current = 0;
-    }
-
-    // Increment resume interaction counter EARLY so UI updates immediately
-    let newResumeInteractions = resumeInteractionsRef.current;
-    if (isResumingRef.current && newCompletedTopics >= 10 && mcqIsCorrect !== false && !isTopicCompleted) {
-      newResumeInteractions += 1;
-      setResumeInteractions(newResumeInteractions);
-      resumeInteractionsRef.current = newResumeInteractions;
-    }
-
-    if (newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED) {
-       teacherContext = "FINAL_REVIEW_INTERACTION";
-    }
-
     if (isTopicCompleted) {
       setCompletedTopics(newCompletedTopics);
       completedTopicsRef.current = newCompletedTopics;
       setSessionCompletedTopics(prev => prev + 1);
     }
     
-    const isReviewMode = !isTimeMet && newCompletedTopics >= 10;
-    const currentTopic = lesson.microtemas?.[newCompletedTopics < 10 ? newCompletedTopics : 9];
+    const allTopicsCompleted = newCompletedTopics >= totalTopics;
+    const isReviewMode = !isTimeMet && allTopicsCompleted;
+    const currentTopic = lesson.microtemas?.[newCompletedTopics < totalTopics ? newCompletedTopics : (totalTopics - 1)];
 
-    const isReadyForExamNow = (newCompletedTopics >= 10) && (newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED);
+    const isReadyForExamNow = allTopicsCompleted && isTimeMet;
     
     if (isReadyForExamNow) {
        // Show streaming bubble while AI generates real feedback for the last answer
@@ -629,11 +620,12 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
        let currentProvider = aiProvider;
        let providerIndex = FALLBACK_CHAIN.indexOf(currentProvider);
        if (providerIndex === -1) providerIndex = 0;
+       const askedQuestions = getAskedQuestionsFromMessages(currentMessages);
 
        for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
          try {
            responseText = await generateTeacherResponse(
-             lesson, user, currentTopic, newCompletedTopics < 10 ? newCompletedTopics : 9,
+             lesson, user, currentTopic, totalTopics - 1,
              true, 'FINAL_REVIEW_INTERACTION',
              (partial) => {
                setMessages(prev => {
@@ -643,7 +635,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                  m[idx] = { ...m[idx], parts: [{ text: partial }] };
                  return m;
                });
-             }
+             },
+             askedQuestions
            );
            break;
          } catch (err) {
@@ -675,6 +668,12 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
        return; // SKIP GEMINI API
     }
 
+    if (allTopicsCompleted && !isTimeMet) {
+      const remainingSeconds = Math.max(0, minRequiredSeconds - secondsRef.current);
+      const remainingMinutes = Math.ceil(remainingSeconds / 60);
+      teacherContext = `${teacherContext} [MODO REPASO: Has terminado todos los temas. Para desbloquear el examen debes cumplir por lo menos con el 75% del tiempo de estudio asignado (faltan aprox. ${remainingMinutes} min). Repasemos con otra pregunta sobre los temas vistos].`;
+    }
+
     const topicAdvanced = isTopicCompleted && newCompletedTopics > previousTopics;
     if (topicAdvanced) {
       const finishedTopic = lesson.microtemas?.[newCompletedTopics - 1];
@@ -693,7 +692,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       setMessages(bridged);
       void saveProgress(bridged, newCompletedTopics, secondsRef.current);
 
-      continueAfterGameRef.current = { teacherContext, newCompletedTopics, newResumeInteractions };
+      continueAfterGameRef.current = { teacherContext, newCompletedTopics, newResumeInteractions: resumeInteractionsRef.current };
       const titles = (lesson.microtemas || []).map(m => m.titulo).filter(Boolean);
       const topicIndex = newCompletedTopics - 1;
       const slot = ((topicIndex % 3) + 3) % 3;
@@ -726,10 +725,12 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
 
     // INSTANT PRELOADED MCQ CHECK
-    if (mcqIsCorrect !== undefined && newResumeInteractions < RESUME_INTERACTIONS_REQUIRED && !isTopicCompleted) {
-       if (preloadedMCQs.length > 0) {
-          const nextMCQ = preloadedMCQs[0];
-          const restMCQs = preloadedMCQs.slice(1);
+    if (mcqIsCorrect !== undefined && !isReadyForExamNow && !isTopicCompleted) {
+       const askedList = getAskedQuestionsFromMessages(messages);
+       const validPreloaded = preloadedMCQs.filter(q => !askedList.some(a => isSimilarQuestion(q.question, a)));
+       if (validPreloaded.length > 0) {
+          const nextMCQ = validPreloaded[0];
+          const restMCQs = validPreloaded.slice(1);
           setPreloadedMCQs(restMCQs);
           lastAskedMCQExplanationRef.current = nextMCQ.explanation;
           
@@ -773,12 +774,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     let currentProvider = aiProvider;
     let providerIndex = FALLBACK_CHAIN.indexOf(currentProvider);
     if (providerIndex === -1) providerIndex = 0;
+    const askedQuestions = getAskedQuestionsFromMessages(currentMessages);
     
     for (let attempt = 0; attempt < FALLBACK_CHAIN.length; attempt++) {
        try {
          responseText = await generateTeacherResponse(
            lesson, user, currentTopic,
-           newCompletedTopics < 10 ? newCompletedTopics : 9,
+           newCompletedTopics < totalTopics ? newCompletedTopics : (totalTopics - 1),
            isReviewMode, teacherContext,
            (partial) => {
              setMessages(prev => {
@@ -788,7 +790,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                newMsgs[idx] = { ...newMsgs[idx], parts: [{ text: partial }] };
                return newMsgs;
              });
-           }
+           },
+           askedQuestions
          );
          break; // Success
        } catch (err) {
@@ -820,13 +823,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       return newMsgs;
     });
 
-    const sessionRequirementMet = isResumingRef.current
-      ? newResumeInteractions >= RESUME_INTERACTIONS_REQUIRED
-      : true;
-
-    const isReadyForExam = (newCompletedTopics >= 10) && (
-      isResumingRef.current ? sessionRequirementMet : (isTimeMet && sessionRequirementMet)
-    );
+    const isReadyForExam = (newCompletedTopics >= totalTopics) && isTimeMet;
 
     if (isReadyForExam) {
       setMessages(prev => [...prev, {
@@ -989,7 +986,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.14</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.15</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
@@ -1120,9 +1117,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
              <h2 className="text-sm font-black uppercase truncate max-w-[200px] sm:max-w-md">{lesson.title}</h2>
              <p className="text-[10px] font-bold opacity-80 uppercase flex flex-wrap items-center gap-2 mt-1">
                {isRetrying && secondsElapsed < penaltySecondsRequired ? <span>Repaso req: {PENALTY_MINUTES} min</span> : null}
-               {isResumingRef.current && completedTopics >= 10 && resumeInteractions < RESUME_INTERACTIONS_REQUIRED && (
-                 <span className="bg-amber-400/30 text-amber-200 px-2 py-0.5 rounded-full text-[9px] font-black tracking-widest border border-amber-400/40">
-                   Interacciones para examen: {resumeInteractions}/{RESUME_INTERACTIONS_REQUIRED}
+               {completedTopics >= ((lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10) && secondsElapsed < Math.round((lesson.durationMinutes || 0) * 0.75 * 60) && (
+                 <span className="bg-amber-400/30 text-amber-200 px-2 py-0.5 rounded-full text-[9px] font-black tracking-widest border border-amber-400/40 animate-pulse">
+                   Modo Repaso (Meta 75%: {Math.ceil((lesson.durationMinutes || 0) * 0.75)} min)
                  </span>
                )}
                <span className="bg-white/20 px-2 py-0.5 rounded-full text-[9px] tracking-widest ml-1">{aiProvider}</span>
@@ -1256,10 +1253,15 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
               onFinish={async (grade) => {
                 if (onLessonAccredited) onLessonAccredited(grade);
                 try {
+                   const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
+                   const finalTopics = Math.max(completedTopicsRef.current, totalTopics);
+                   const finalSeconds = Math.max(secondsRef.current, lesson.elapsedSeconds || 0);
                    await updateLessonInStudent(user.username, {
                      ...lesson, 
                      grade,
-                     actualDurationMinutes: Math.ceil(secondsElapsed / 60),
+                     completedTopicsCount: finalTopics,
+                     elapsedSeconds: finalSeconds,
+                     actualDurationMinutes: Math.ceil(finalSeconds / 60),
                      completed: grade >= 6,
                      lesson_status: grade >= 6 ? 'Aprobada' : 'Reprobada'
                    });

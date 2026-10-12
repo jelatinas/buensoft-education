@@ -1,5 +1,5 @@
 
-import { User, Role, StudentData, Lesson, SubjectGuide, Transaction, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante, GeminiLessonHistory } from './types.ts';
+import { User, Role, StudentData, Lesson, SubjectGuide, Transaction, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante, GeminiLessonHistory, ClassExamQuestion } from './types.ts';
 import { supabase } from './supabaseClient.ts';
 
 // --- UTILIDADES DE VALIDACIÓN DE TIPOS ---

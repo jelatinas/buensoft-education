@@ -113,6 +113,15 @@ export interface Topic {
   order_index: number;
 }
 
+export type Microtema = Topic;
+
+export interface GeminiLessonHistory {
+  id: string | number;
+  class_id: string | number;
+  estudiante_id: string;
+  chat_history: string;
+}
+
 export interface StudentClassProgress {
   id: string | number;
   estudiante_id: string;
@@ -125,7 +134,8 @@ export interface StudentClassProgress {
 
 export interface Pregunta {
   id: string | number;
-  topic_id: string | number;
+  topic_id?: string | number;
+  microtema_id?: string | number;
   tipo: 'multiple_choice' | 'true_false' | 'open';
   pregunta: string;
   respuesta_correcta: string;

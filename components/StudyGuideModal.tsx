@@ -105,6 +105,7 @@ const StudyGuideModal: React.FC<StudyGuideModalProps> = ({ lesson, user, onClose
           const microtemasToSave = generated.map((m: any) => ({
             titulo: m.titulo,
             contenido: m.contenido,
+            class_id: lId,
             leccion_id: lId
           }));
 

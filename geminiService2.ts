@@ -192,6 +192,72 @@ export const normalizeExamQuestion = (raw: any): NormalizedExamQuestion | null =
   };
 };
 
+export const isSimilarQuestion = (q1: string, q2: string): boolean => {
+  if (!q1 || !q2) return false;
+  const clean = (s: string) => 
+    String(s || '')
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]/g, ' ')
+      .trim()
+      .replace(/\s+/g, ' ');
+
+  const s1 = clean(q1);
+  const s2 = clean(q2);
+  if (!s1 || !s2) return false;
+  if (s1 === s2) return true;
+  if (s1.length > 15 && s2.length > 15 && (s1.includes(s2) || s2.includes(s1))) {
+    return true;
+  }
+
+  const stopWords = new Set([
+    'que', 'para', 'como', 'cual', 'cuales', 'cuando', 'donde', 'quien', 'por', 'sobre',
+    'este', 'esta', 'estos', 'estas', 'entre', 'hacia', 'hasta', 'desde', 'segun',
+    'pero', 'aunque', 'porque', 'entonces', 'tambien', 'forma', 'manera', 'caso', 'ejemplo',
+    'siguiente', 'siguientes', 'pregunta', 'respuesta', 'opcion', 'indica', 'senala', 'menciona',
+    'significa', 'define', 'explica'
+  ]);
+
+  const words1 = new Set(s1.split(' ').filter(w => w.length > 3 && !stopWords.has(w)));
+  const words2 = new Set(s2.split(' ').filter(w => w.length > 3 && !stopWords.has(w)));
+  if (words1.size === 0 || words2.size === 0) return false;
+
+  let intersection = 0;
+  for (const w of words1) {
+    if (words2.has(w)) intersection++;
+  }
+  const union = new Set([...words1, ...words2]).size;
+  return (intersection / union) > 0.6;
+};
+
+export const getAskedQuestionsFromMessages = (msgs: any[]): string[] => {
+  if (!Array.isArray(msgs)) return [];
+  const list: string[] = [];
+  for (const m of msgs) {
+    if (!m) continue;
+    const parts = m.parts || (m.role === 'model' && m.text ? [{ text: m.text }] : []);
+    for (const p of parts) {
+      if (!p || !p.text) continue;
+      const text = p.text;
+      const match = text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/) 
+                 || text.match(/(\{[\s\S]*?\})\s*\[\/DATA_LOGICA\]/);
+      if (match) {
+        try {
+          const raw = match[1].replace(/```json|```/g, '').trim();
+          const jsonMatch = raw.match(/(\{[\s\S]*\})/);
+          const parsed = JSON.parse(jsonMatch ? jsonMatch[1] : raw);
+          if (parsed.question && typeof parsed.question === 'string') {
+            const q = parsed.question.trim();
+            if (q && !list.includes(q)) list.push(q);
+          }
+        } catch (e) {}
+      }
+    }
+  }
+  return list;
+};
+
 const getAIInstance = () => {
   const studentKey = typeof window !== 'undefined' ? localStorage.getItem('student_gemini_api_key') : null;
   const apiKey = studentKey || process.env.API_KEY || process.env.GEMINI_API_KEY || (import.meta as any).env?.VITE_GEMINI_API_KEY;
@@ -356,7 +422,8 @@ export const generateTeacherResponse = async (
   topicIndex: number,
   isReviewMode: boolean = false,
   feedbackContext?: string,
-  onChunk?: (partial: string) => void
+  onChunk?: (partial: string) => void,
+  askedQuestions: string[] = []
 ) => {
   const systemInstruction = `
     ROL: Profesor experto y empático. Enfócate en dar explicaciones claras, directas y objetivas. NO exageres con elogios ni alabanzas (evita decir "¡Excelente trabajo!", "¡Eres un genio!", etc.), mantén un tono profesional. Usa emojis moderadamente.
@@ -374,30 +441,37 @@ export const generateTeacherResponse = async (
 No uses estas etiquetas fuera de [EXPLICACION].
 La etiqueta de apertura se escribe EXACTAMENTE [EXPLICACION]. Nunca uses [EXPRESSION], [EXPLANATION] ni ninguna variante en inglés.`;
 
+  const excludedQuestionsSection = askedQuestions && askedQuestions.length > 0 ? `
+PREGUNTAS YA REALIZADAS EN ESTA LECCIÓN (ESTRICTAMENTE PROHIBIDO REPETIRLAS):
+${askedQuestions.slice(-15).map((q, idx) => `- "${q}"`).join('\n')}
+
+REGLA CRÍTICA DE NO REPETICIÓN:
+Formula una pregunta COMPLETAMENTE NUEVA, con un enfoque o situación diferente y con un EJEMPLO DE LA VIDA DIARIA DIFERENTE a los anteriores.
+` : '';
+
   let prompt = "";
-  // Check if we hit the limit for resume interactions (assume feedbackContext contains a signal or we pass a flag)
-  // Wait, I need to pass resumeInteractions count to this function!
-  // I will just use a specific string in feedbackContext from VirtualClassroom to signal it's the final interaction.
   if (isReviewMode) {
      if (feedbackContext === "FINAL_REVIEW_INTERACTION") {
-        prompt = `El estudiante ha completado sus interacciones de repaso obligatorias. Evalúa brevemente su última respuesta y dile explícitamente "Generando examen de evaluación...". NO HAGAS NINGUNA PREGUNTA NUEVA.
+        prompt = `El estudiante ha completado todos los temas y ha cumplido satisfactoriamente con por lo menos el 75% del tiempo asignado de estudio. Evalúa brevemente su última respuesta con entusiasmo profesional y dile explícitamente: "¡Felicidades! Has completado el tiempo de estudio requerido y dominas los temas. Generando examen de evaluación personalizada...". NO HAGAS NINGUNA PREGUNTA NUEVA.
 FORMATO OBLIGATORIO:
-[EXPLICACION] <Tu evaluación aquí>. Generando examen de evaluación... [/EXPLICACION]`;
+[EXPLICACION] <Tu evaluación aquí>. Generando examen de evaluación personalizada... [/EXPLICACION]`;
      } else {
         const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\\n') || '';
-        prompt = `El estudiante ha completado todos los temas pero necesita seguir practicando para cumplir el tiempo de estudio. 
+        prompt = `El estudiante ha completado todos los temas pero está en MODO DE REPASO OBLIGATORIO para cumplir con por lo menos el 75% del tiempo asignado antes de mostrarle la opción de tomar el examen.
 Hazle UNA pregunta de repaso de Opción Múltiple (MCQ) al azar, basada ESPECÍFICAMENTE en uno de los temas vistos hoy:
 ${topicsList}
 
+${excludedQuestionsSection}
 Instrucciones: ${feedbackContext 
-  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal, y formula UNA NUEVA pregunta.`
-  : `Haz UNA pregunta de repaso al azar.`}
-IMPORTANTE: La pregunta debe ser OBLIGATORIAMENTE de Opción Múltiple (MCQ).
+  ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal, y formula UNA NUEVA pregunta de repaso con un EJEMPLO DE LA VIDA DIARIA DIFERENTE.`
+  : `Haz UNA pregunta de repaso al azar con un ejemplo cotidiano nuevo.`}
+IMPORTANTE:
+- La pregunta debe ser OBLIGATORIAMENTE de Opción Múltiple (MCQ).
+- ESTÁ ESTRICTAMENTE PROHIBIDO repetir preguntas previas o usar los mismos ejemplos. Usa situaciones nuevas de la vida diaria.
 ${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 ¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION].
-[EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
-[EXPLICACION] <Explicación breve o introducción> [/EXPLICACION]
+[EXPLICACION] <Explicación breve o introducción con [IDEA] y [EJEMPLO]> [/EXPLICACION]
 [DATA_LOGICA] {"type":"MCQ", "question":"...", "options":["...","...","...","..."], "correct":"..."} [/DATA_LOGICA]
 REGLA VITAL PARA EL MCQ: El valor de "correct" DEBE SER EXACTAMENTE IDÉNTICO letra por letra a una de las "options". No agregues prefijos como "A)" si no están en las opciones.`;
      }
@@ -415,7 +489,7 @@ INSTRUCCIÓN VITAL:
 2. Da una explicación introductoria breve y clara.
 3. BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA (fácil de entender).
 4. Después del ejemplo, haz UNA (1) sola pregunta para validar su comprensión.
-
+${excludedQuestionsSection}
 IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
 ${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
@@ -431,8 +505,11 @@ Luego, si estamos avanzando a un NUEVO tema (el título del tema actual es nuevo
 Si seguimos en el MISMO tema, solo da el feedback y continúa.`
   : `Presenta el tema actual poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA.`}
 
+${excludedQuestionsSection}
 Finalmente, haz UNA (1) sola pregunta para validar su comprensión.
-IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
+IMPORTANTE:
+- Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
+- La pregunta y el ejemplo de la vida diaria deben ser DIFERENTES a las preguntas previas.
 ${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 ¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION]. Sé directo, breve y no redundes.
@@ -602,7 +679,8 @@ export const generateMCQBatch = async (
   lesson: Lesson,
   studentName: string,
   currentTopic: Microtema | undefined,
-  isReviewMode: boolean = false
+  isReviewMode: boolean = false,
+  excludeQuestions: string[] = []
 ) => {
   const ai = getAIInstance();
   
@@ -615,13 +693,20 @@ export const generateMCQBatch = async (
     promptContext = "Genera preguntas generales sobre la lección.";
   }
 
+  const excludedSection = excludeQuestions.length > 0 ? `
+    PREGUNTAS YA REALIZADAS (ESTRICTAMENTE PROHIBIDO REPETIRLAS):
+    ${excludeQuestions.slice(-15).map(q => `- "${q}"`).join('\n')}
+    Formula preguntas y situaciones de la vida diaria COMPLETAMENTE DIFERENTES.
+  ` : '';
+
   const prompt = `
     MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}". ${lesson.learningPrompt ? `PROMPT: "${lesson.learningPrompt}".` : ''}
     ESTUDIANTE: ${studentName}.
     CONTEXTO: ${promptContext}
+    ${excludedSection}
     
     Genera 3 preguntas de opción múltiple (MCQ). Para cada pregunta:
-    - Formula una pregunta clara.
+    - Formula una pregunta clara y diferente con un ejemplo nuevo.
     - Proporciona 4 opciones.
     - Indica la opción correcta exacta.
     - Proporciona una explicación pedagógica dirigida al estudiante del porqué es correcta.
@@ -1280,6 +1365,7 @@ export const generateClassExamQuestions = async (
   neededMCQ: number,
   neededOpen: number,
   neededTF: number,
+  excludedQuestions: string[] = [],
   retries = 2
 ) => {
   const temarioStr = temario.map((m, i) => {
@@ -1290,21 +1376,33 @@ export const generateClassExamQuestions = async (
   const total = neededMCQ + neededOpen + neededTF;
   if (total === 0) return [];
 
+  const excludedSection = excludedQuestions.length > 0 ? `
+  PREGUNTAS YA REALIZADAS AL ESTUDIANTE DURANTE LA LECCIÓN (ESTRICTAMENTE PROHIBIDO REPETIRLAS EN EL EXAMEN):
+  ${excludedQuestions.slice(-20).map((q, i) => `${i + 1}. "${q}"`).join('\n')}
+
+  REGLA CRÍTICA DE NO REPETICIÓN:
+  1. Está ESTRICTAMENTE PROHIBIDO repetir cualquiera de las preguntas anteriores en el examen.
+  2. Las preguntas del examen deben evaluar los conceptos del temario pero formuladas de manera DIFERENTE, abordando situaciones o EJEMPLOS DE LA VIDA DIARIA DIFERENTES a los que se usaron en la lección.
+  3. Ninguna pregunta generada debe ser repetida o similar a otra dentro de este examen.
+  ` : '';
+
   const prompt = `Genera exactamente ${total} preguntas de evaluacion unicas para la materia "${subject}" y leccion "${lessonTitle}".
   CANTIDADES OBLIGATORIAS:
   - ${neededOpen} preguntas abiertas (tipo: 'open')
   - ${neededMCQ} preguntas de opcion multiple (tipo: 'multiple_choice')
   - ${neededTF} preguntas de verdadero/falso (tipo: 'true_false')
 
-  HISTORIAL DE CLASE (Usa ejemplos de aqui):
+  TEMARIO DE REFERENCIA:
   ${temarioStr}
+  ${excludedSection}
 
   REGLAS CRITICAS:
   1. PARA OPCION MULTIPLE (multiple_choice): Genera EXACTAMENTE 4 opciones distintas. Cada opcion debe expresar una idea diferente. Prohibido repetir la respuesta correcta con otras palabras o conjugaciones. La correcta debe ser aleatoria (no siempre la A).
   2. El campo 'tipo' debe ser exactamente 'open', 'multiple_choice' o 'true_false'.
   3. Para 'true_false', la correcta debe ser 'VERDADERO' o 'FALSO'.
   4. El campo 'opciones' DEBE ser un arreglo de strings (textos), NO objetos. Ejemplo: ["Opcion 1", "Opcion 2"]
-  5. FORMATO DE SALIDA EXACTO (Un objeto con la propiedad "preguntas" que es un arreglo):
+  5. Ninguna pregunta generada debe ser repetida entre sí.
+  6. FORMATO DE SALIDA EXACTO (Un objeto con la propiedad "preguntas" que es un arreglo):
   {
     "preguntas": [
       {

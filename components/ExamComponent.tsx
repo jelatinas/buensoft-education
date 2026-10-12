@@ -13,7 +13,7 @@ import {
   saveNewClassExamQuestions,
   saveStudentExamAnswer
 } from '../storage2';
-import { evaluateOpenAnswerAI, shuffleOptions, evaluateBatchOpenAnswersAI, OpenAnswerEvaluation, BatchOpenAnswerResult, generateClassExamQuestions, normalizeExamQuestion, extractOpcionStrings, NormalizedExamQuestion } from '../geminiService2';
+import { evaluateOpenAnswerAI, shuffleOptions, evaluateBatchOpenAnswersAI, OpenAnswerEvaluation, BatchOpenAnswerResult, generateClassExamQuestions, normalizeExamQuestion, extractOpcionStrings, NormalizedExamQuestion, isSimilarQuestion, getAskedQuestionsFromMessages } from '../geminiService2';
 import { Loader2, CheckCircle2, XCircle, ArrowRight, ArrowLeft, Send, BrainCircuit, RefreshCcw, Clock } from 'lucide-react';
 // @ignore
 import ReactMarkdown from 'react-markdown';
@@ -132,8 +132,23 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
         }
 
         const rawQuestions = await getUnansweredQuestionsForClass(studentId, lessonDbId);
-        let freshQuestions = toAnswerable(rawQuestions);
-        console.log(`Se encontraron ${rawQuestions.length} preguntas en BD, ${freshQuestions.length} utilizables (con opciones válidas).`);
+        const lessonQuestions = getAskedQuestionsFromMessages(chatHistory || []);
+        
+        // Filter out any existing questions that match or repeat questions asked during the lesson
+        let freshQuestions = toAnswerable(rawQuestions).filter(q => {
+          return !lessonQuestions.some(lq => isSimilarQuestion(q.pregunta, lq));
+        });
+
+        // Deduplicate freshQuestions internally
+        const uniqueFresh: NormalizedExamQuestion[] = [];
+        for (const q of freshQuestions) {
+          if (!uniqueFresh.some(uq => isSimilarQuestion(uq.pregunta, q.pregunta))) {
+            uniqueFresh.push(q);
+          }
+        }
+        freshQuestions = uniqueFresh;
+
+        console.log(`Se encontraron ${rawQuestions.length} preguntas en BD, ${freshQuestions.length} utilizables (sin repetir preguntas de la lección).`);
 
         const mcqCount = freshQuestions.filter(q => q.tipo === 'multiple_choice').length;
         const openCount = freshQuestions.filter(q => q.tipo === 'open').length;
@@ -145,10 +160,22 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
         let aiError: any = null;
 
         if (neededMCQ > 0 || neededOpen > 0 || neededTF > 0) {
-          console.log(`Generando déficit con AI: ${neededMCQ} MCQ, ${neededOpen} Open, ${neededTF} TF`);
+          console.log(`Generando déficit con AI: ${neededMCQ} MCQ, ${neededOpen} Open, ${neededTF} TF (excluyendo ${lessonQuestions.length} preguntas de la lección)`);
           try {
-            const aiPreguntas = await generateClassExamQuestions(lesson.subject, lesson.title, examMicrotemas, neededMCQ, neededOpen, neededTF);
-            const validAi = toAnswerable(aiPreguntas || []);
+            const aiPreguntas = await generateClassExamQuestions(
+              lesson.subject, 
+              lesson.title, 
+              examMicrotemas, 
+              neededMCQ, 
+              neededOpen, 
+              neededTF,
+              lessonQuestions
+            );
+            const validAi = toAnswerable(aiPreguntas || []).filter(q => {
+              const matchesLesson = lessonQuestions.some(lq => isSimilarQuestion(q.pregunta, lq));
+              const matchesFresh = freshQuestions.some(fq => isSimilarQuestion(q.pregunta, fq.pregunta));
+              return !matchesLesson && !matchesFresh;
+            });
             if (validAi.length > 0) {
               const toSave = validAi.map((q) => ({
                 class_id: lessonDbId,
@@ -172,7 +199,14 @@ const ExamComponent: React.FC<ExamComponentProps> = ({ lesson, lessonDbId, micro
         const finalOpen = freshQuestions.filter(q => q.tipo === 'open').slice(0, 4);
         const finalTF = freshQuestions.filter(q => q.tipo === 'true_false').slice(0, 2);
         
-        let finalQuestions = [...finalMCQ, ...finalOpen, ...finalTF];
+        const combined = [...finalMCQ, ...finalOpen, ...finalTF];
+        const uniqueFinal: NormalizedExamQuestion[] = [];
+        for (const q of combined) {
+          if (!uniqueFinal.some(uq => isSimilarQuestion(uq.pregunta, q.pregunta))) {
+            uniqueFinal.push(q);
+          }
+        }
+        let finalQuestions = uniqueFinal;
         
         // Shuffle the 10 questions
         finalQuestions = finalQuestions.sort(() => 0.5 - Math.random());
