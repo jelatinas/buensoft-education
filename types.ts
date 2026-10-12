@@ -174,6 +174,7 @@ export interface ChatMessage {
   parts: ArrayParts[];
   timestamp?: string;
   is_correct?: boolean;
+  feedback?: string;
   selectedOption?: string; 
   isSilent?: boolean; 
   studentResponse?: string;

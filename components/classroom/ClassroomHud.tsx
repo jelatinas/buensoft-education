@@ -16,7 +16,7 @@ type ClassroomHudProps = {
 
 export default function ClassroomHud({ completedTopics, stars, combo, score, mood, winStreak, scoreBurst }: ClassroomHudProps) {
   const current = Math.min(completedTopics, 9);
-  const topicLabel = completedTopics >= 10 ? '10 temas listos' : `Tema ${completedTopics + 1} de 10`;
+  const topicLabel = completedTopics >= 10 ? '10 de 10 temas vistos' : `Tema ${completedTopics + 1} de 10`;
   const goalPercent = Math.min(100, Math.round((score / CLASS_GOAL) * 100));
   const multiplier = streakMultiplier(winStreak);
 

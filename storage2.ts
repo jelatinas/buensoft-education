@@ -246,6 +246,12 @@ export const getStudentData = async (username: string): Promise<StudentData | nu
   return { username, student_lessons: mappedLessons };
 };
 
+export const getStudentLessonById = async (lessonId: string | number) => {
+  const { data, error } = await supabase.from('student_lessons').select('*').eq('id', String(lessonId)).maybeSingle();
+  if (error || !data) return null;
+  return data;
+};
+
 export const deleteLessonFromStudent = async (lessonId: string) => {
   const { error } = await supabase.from('student_lessons').delete().eq('id', String(lessonId));
   if (error) throw error;
@@ -357,7 +363,7 @@ export const updateLessonInStudent = async (username: string, updatedLesson: Les
     completed: updatedLesson.completed,
     grade: updatedLesson.grade,
     elapsed_seconds: updatedLesson.elapsedSeconds,
-    actual_duration_minutes: updatedLesson.actualDurationMinutes,
+    actual_duration_minutes: updatedLesson.actualDurationMinutes ?? Math.ceil((updatedLesson.elapsedSeconds || 0) / 60),
     valid_interactions_count: updatedLesson.completedTopicsCount,
     lesson_status: updatedLesson.lesson_status,
     subject: updatedLesson.subject,

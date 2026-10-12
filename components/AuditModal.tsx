@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Lesson, IntentoExamen } from '../types';
-import { getClassChatHistory, getIntentosExamen, getIntentoDetails, getClassIdFromLesson } from '../storage2';
+import { getClassChatHistory, getIntentosExamen, getIntentoDetails, getClassIdFromLesson, getStudentLessonById } from '../storage2';
 import ReactMarkdown from 'react-markdown';
 import { BookOpen, FileText } from 'lucide-react';
 import VirtualClassroom from './VirtualClassroom';
@@ -31,12 +31,20 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
           return;
         }
 
-        const [history, examIntentos] = await Promise.all([
+        const [history, examIntentos, latestLessonRow] = await Promise.all([
           getClassChatHistory(leccionId, studentUsername),
-          getIntentosExamen(studentId, leccionId)
+          getIntentosExamen(studentId, leccionId),
+          getStudentLessonById(lesson.id)
         ]);
         setLessonHistory(history);
         setIntentos(examIntentos);
+        if (latestLessonRow) {
+          lesson.completedTopicsCount = latestLessonRow.valid_interactions_count ?? lesson.completedTopicsCount;
+          lesson.elapsedSeconds = latestLessonRow.elapsed_seconds ?? lesson.elapsedSeconds;
+          lesson.lesson_status = latestLessonRow.lesson_status ?? lesson.lesson_status;
+          lesson.completed = latestLessonRow.completed ?? lesson.completed;
+          lesson.grade = latestLessonRow.grade ?? lesson.grade;
+        }
         if (examIntentos.length > 0) {
           setSelectedIntento(String(examIntentos[0].id));
         }

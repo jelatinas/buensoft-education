@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { Lesson, ChatMessage } from '../types';
-import { updateLessonInStudent, getClassChatHistory, saveClassChatHistory, getClassIdFromLesson, getMicrotemas } from '../storage2';
+import { updateLessonInStudent, getClassChatHistory, saveClassChatHistory, getClassIdFromLesson, getMicrotemas, getStudentLessonById } from '../storage2';
 import { generateTeacherResponse, evaluateStudentAnswer, generateMCQBatch, generateTopicSentence, getAiProvider, setAiProvider, isSimilarQuestion, getAskedQuestionsFromMessages } from '../geminiService2';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -126,10 +126,12 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const correctAnswersRef = useRef(correctAnswersForTopic);
   const resumeInteractionsRef = useRef(resumeInteractions);
   const secondsRef = useRef(secondsElapsed);
+  const messagesRef = useRef(messages);
   useEffect(() => { completedTopicsRef.current = completedTopics; }, [completedTopics]);
   useEffect(() => { correctAnswersRef.current = correctAnswersForTopic; }, [correctAnswersForTopic]);
   useEffect(() => { resumeInteractionsRef.current = resumeInteractions; }, [resumeInteractions]);
   useEffect(() => { secondsRef.current = secondsElapsed; }, [secondsElapsed]);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
 
   // Preload MCQs whenever the topic changes or we enter review mode
   useEffect(() => {
@@ -246,7 +248,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
            lesson.microtemas = await getMicrotemas(mId);
         }
 
-        if (!isAdminAudit && history.length === 0 && mId) {
+        if (history.length === 0 && mId) {
           const dbHistory = await getClassChatHistory(mId, user.username);
           if (dbHistory && dbHistory.chat_history) {
             try {
@@ -256,14 +258,54 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
             }
           }
         }
+
+        // Fetch freshest student_lessons record if available
+        let dbTopicsCount = lesson.completedTopicsCount || 0;
+        let dbElapsedSeconds = lesson.elapsedSeconds || 0;
+        if (lesson.id) {
+          try {
+            const slRow = await getStudentLessonById(lesson.id);
+            if (slRow) {
+              if (slRow.valid_interactions_count !== undefined && slRow.valid_interactions_count !== null) {
+                dbTopicsCount = Math.max(dbTopicsCount, slRow.valid_interactions_count);
+              }
+              if (slRow.elapsed_seconds) {
+                dbElapsedSeconds = Math.max(dbElapsedSeconds, slRow.elapsed_seconds);
+              }
+              if (slRow.lesson_status === 'Aprobada' || slRow.completed) {
+                dbTopicsCount = Math.max(dbTopicsCount, 10);
+              }
+            }
+          } catch (e) {
+            console.warn("Could not load latest student_lessons row:", e);
+          }
+        }
+
+        // Check history for completed topic signals
+        let maxTopicFromHistory = 0;
+        for (const m of history) {
+          const text = m.parts?.[0]?.text || '';
+          const match = text.match(/Tema\s+(\d+)\s+listo/i);
+          if (match) {
+            maxTopicFromHistory = Math.max(maxTopicFromHistory, parseInt(match[1], 10));
+          }
+        }
+        dbTopicsCount = Math.max(dbTopicsCount, maxTopicFromHistory);
+
+        if (lesson.lesson_status === 'Aprobada' || lesson.completed) {
+          dbTopicsCount = Math.max(dbTopicsCount, 10);
+        }
+
+        lesson.completedTopicsCount = dbTopicsCount;
+        lesson.elapsedSeconds = dbElapsedSeconds;
         
         // Reset local stats if there's genuinely no history (new attempt)
         if (history.length === 0) {
            setSecondsElapsed(0);
            setCompletedTopics(0);
         } else {
-           setSecondsElapsed(lesson.elapsedSeconds || 0);
-           setCompletedTopics(lesson.completedTopicsCount || 0);
+           setSecondsElapsed(dbElapsedSeconds);
+           setCompletedTopics(dbTopicsCount);
            isResumingRef.current = true;
            setTimeout(() => {
              messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
@@ -417,19 +459,52 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const saveProgress = async (msgs: ChatMessage[], topicsCount: number, time: number) => {
     if (isAdminAudit) return;
     try {
+      lesson.completedTopicsCount = topicsCount;
+      lesson.elapsedSeconds = time;
       await updateLessonInStudent(user.username, {
         ...lesson,
         completedTopicsCount: topicsCount,
         elapsedSeconds: time,
-        lesson_status: 'En Progreso'
+        actualDurationMinutes: Math.ceil(time / 60),
+        lesson_status: lesson.lesson_status === 'Aprobada' ? 'Aprobada' : 'En Progreso'
       });
-      if (masterLeccionIdRef.current && msgs.length > 1) {
+      if (masterLeccionIdRef.current && msgs.length > 0) {
         await saveClassChatHistory(masterLeccionIdRef.current, user.username, JSON.stringify(msgs));
       }
     } catch (e) {
       console.error("Error saving progress", e);
     }
   };
+
+  // Auto-guardado periódico cada 20 segundos mientras el estudiante está en clase
+  useEffect(() => {
+    if (isAdminAudit || showExam) return;
+    const interval = setInterval(() => {
+      if (messagesRef.current.length > 0 && secondsRef.current > 0) {
+        saveProgress(messagesRef.current, completedTopicsRef.current, secondsRef.current);
+      }
+    }, 20000);
+    return () => clearInterval(interval);
+  }, [isAdminAudit, showExam]);
+
+  // Guardado de progreso al salir, cerrar pestaña o desmontar
+  useEffect(() => {
+    const handleExitSave = () => {
+      if (!isAdminAudit && messagesRef.current.length > 0) {
+        saveProgress(messagesRef.current, completedTopicsRef.current, secondsRef.current);
+      }
+    };
+    window.addEventListener('beforeunload', handleExitSave);
+    window.addEventListener('pagehide', handleExitSave);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleExitSave);
+      window.removeEventListener('pagehide', handleExitSave);
+      if (!isAdminAudit && messagesRef.current.length > 0) {
+        saveProgress(messagesRef.current, completedTopicsRef.current, secondsRef.current);
+      }
+    };
+  }, [isAdminAudit]);
 
   const resumeClassTurn = async (pending: PendingClassTurn) => {
     const { teacherContext, newCompletedTopics, newResumeInteractions } = pending;
@@ -527,7 +602,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     studentAnswer: string,
     currentMessages: ChatMessage[],
     skipUserBubble: boolean = false,
-    mcqIsCorrect?: boolean
+    mcqIsCorrect?: boolean,
+    customFeedback?: string
   ) => {
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
     const minRequiredSeconds = Math.round(targetSeconds * 0.75);
@@ -568,13 +644,41 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       let evalResult;
       // Skip AI evaluation for MCQ - we already know if it's correct
       if (mcqIsCorrect !== undefined) {
-        const explanation = lastAskedMCQExplanationRef.current || (mcqIsCorrect ? "La respuesta elegida fue la correcta." : "La respuesta elegida fue incorrecta.");
+        const explanation = customFeedback || lastAskedMCQExplanationRef.current || (mcqIsCorrect ? "La respuesta elegida fue la correcta." : "La respuesta elegida fue incorrecta.");
         evalResult = { 
           aprobado: mcqIsCorrect, 
           retroalimentacion: explanation 
         };
       } else {
         evalResult = await evaluateStudentAnswer(studentAnswer, lastQuestion, user);
+        // Attach reaction and feedback to the student's message
+        setMessages(prev => {
+          let uIdx = -1;
+          for (let i = prev.length - 1; i >= 0; i--) {
+            if (prev[i].role === 'user') { uIdx = i; break; }
+          }
+          if (uIdx !== -1) {
+            const copy = [...prev];
+            copy[uIdx] = {
+              ...copy[uIdx],
+              is_correct: evalResult.aprobado,
+              feedback: evalResult.retroalimentacion
+            };
+            return copy;
+          }
+          return prev;
+        });
+        let currUIdx = -1;
+        for (let i = currentMessages.length - 1; i >= 0; i--) {
+          if (currentMessages[i].role === 'user') { currUIdx = i; break; }
+        }
+        if (currUIdx !== -1) {
+          currentMessages[currUIdx] = {
+            ...currentMessages[currUIdx],
+            is_correct: evalResult.aprobado,
+            feedback: evalResult.retroalimentacion
+          };
+        }
       }
       
       if (evalResult.aprobado) {
@@ -836,7 +940,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
   };
 
-  // Handle MCQ option click - visual feedback inline, NO user message bubble
+  // Handle MCQ option click - creates student message bubble with reaction & feedback
   const handleMCQSelect = async (opt: string, correctAnswer: string, messageIndex: number) => {
     if (isLoading || isPaused || isAdminAudit || activeGame || preparingGame) return;
     
@@ -848,11 +952,22 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const isCorrect = normalize(opt) === normalize(correctAnswer) || normalize(correctAnswer).includes(normalize(opt)) || normalize(opt).includes(normalize(correctAnswer));
     setMcqSelections(prev => ({ ...prev, [messageIndex]: { selected: opt, correct: correctAnswer } }));
     
+    const feedbackText = lastAskedMCQExplanationRef.current || (isCorrect ? "¡Excelente! Has elegido la opción correcta." : `Opción incorrecta. La respuesta correcta era: "${correctAnswer}".`);
+
+    const userMsg: ChatMessage = {
+      role: 'user',
+      parts: [{ text: opt }],
+      timestamp: new Date().toISOString(),
+      is_correct: isCorrect,
+      feedback: feedbackText
+    };
+
     try {
       const currentMsgs = [...messages];
       currentMsgs[messageIndex] = { ...currentMsgs[messageIndex], selectedOption: opt, is_correct: isCorrect };
-      setMessages(currentMsgs);
-      await generateAndAppendTeacherResponse(opt, currentMsgs, true, isCorrect);
+      const msgsWithUser = [...currentMsgs, userMsg];
+      setMessages(msgsWithUser);
+      await generateAndAppendTeacherResponse(opt, msgsWithUser, false, isCorrect, feedbackText);
     } catch (err: any) {
       console.error(err);
       const errorMsg: ChatMessage = { 
@@ -906,11 +1021,47 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   const renderMessage = (msg: ChatMessage, index: number) => {
     if (msg.role === 'user') {
+      const hasReaction = msg.is_correct !== undefined;
       return (
-        <div key={index} className="flex justify-end w-full mb-4">
-          <div className="bg-indigo-600 text-white p-4 rounded-[2rem] rounded-tr-none max-w-[80%] shadow-md">
-             <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={MarkdownComponents}>{msg.parts[0].text}</ReactMarkdown>
+        <div key={index} className="flex flex-col items-end w-full mb-5">
+          <div className="relative bg-indigo-600 text-white p-4 rounded-[2rem] rounded-tr-none max-w-[85%] sm:max-w-[75%] shadow-md">
+             <div className="font-semibold text-sm sm:text-base leading-relaxed">
+               <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeRaw]} components={MarkdownComponents}>
+                 {msg.parts[0].text}
+               </ReactMarkdown>
+             </div>
+
+             {/* WHATSAPP-STYLE REACTION BADGE */}
+             {hasReaction && (
+               <div 
+                 title={msg.is_correct ? "Respuesta correcta" : "Respuesta incorrecta"}
+                 className={`absolute -bottom-3.5 right-3 bg-white dark:bg-indigo-900 border-2 shadow-md rounded-full px-2 py-0.5 flex items-center gap-1 select-none transform transition-transform hover:scale-110 z-10 ${
+                   msg.is_correct 
+                     ? 'border-emerald-400 text-emerald-600 dark:text-emerald-400 shadow-emerald-500/20' 
+                     : 'border-rose-400 text-rose-600 dark:text-rose-400 shadow-rose-500/20'
+                 }`}
+               >
+                 <span className="text-sm leading-none">{msg.is_correct ? '👍' : '😢'}</span>
+               </div>
+             )}
           </div>
+
+          {/* PEQUEÑO FEEDBACK SOBRE SU RESPUESTA */}
+          {msg.feedback && (
+            <div className={`mt-2 flex items-start gap-2 px-3.5 py-2 rounded-2xl max-w-[85%] sm:max-w-[75%] text-xs font-bold shadow-sm ${
+              msg.is_correct
+                ? 'bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+                : 'bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200'
+            }`}>
+              <span className="text-base leading-tight shrink-0">{msg.is_correct ? '👍' : '😢'}</span>
+              <div className="flex-1">
+                <span className="text-[10px] uppercase font-black tracking-wider block opacity-75">
+                  {msg.is_correct ? 'Retroalimentación:' : 'Explicación:'}
+                </span>
+                <span className="leading-snug">{msg.feedback}</span>
+              </div>
+            </div>
+          )}
         </div>
       );
     }
@@ -986,7 +1137,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.15</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.16</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
@@ -1033,13 +1184,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
                      if (hasAnsweredMCQ) {
                        if (aiFeedbackExists) {
-                         // AI HAS RESPONDED: Reveal correct/incorrect
+                         // AI HAS RESPONDED: Reveal correct/incorrect with WhatsApp-style 👍 or 😢
                          if (isCorrectOpt) {
-                           btnClass += "bg-green-50 dark:bg-green-900/30 border-green-500 text-green-800 dark:text-green-200";
-                           icon = <CheckCircle2 size={18} className="text-green-500 shrink-0" />;
+                           btnClass += "bg-emerald-50 dark:bg-emerald-950/30 border-emerald-500 text-emerald-900 dark:text-emerald-200";
+                           icon = <span className="text-base shrink-0 leading-none">👍</span>;
                          } else if (isSelected) {
-                           btnClass += "bg-red-50 dark:bg-red-900/30 border-red-500 text-red-800 dark:text-red-200";
-                           icon = <XCircle size={18} className="text-red-500 shrink-0" />;
+                           btnClass += "bg-rose-50 dark:bg-rose-950/30 border-rose-500 text-rose-900 dark:text-rose-200";
+                           icon = <span className="text-base shrink-0 leading-none">😢</span>;
                          } else {
                            btnClass += "border-indigo-50 dark:border-indigo-900 opacity-30 text-indigo-400";
                          }
@@ -1128,7 +1279,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         </div>
         <button onClick={async () => {
            if (!isAdminAudit) {
-              await saveProgress(messages, completedTopics, secondsElapsed);
+              await saveProgress(messagesRef.current, completedTopicsRef.current, secondsRef.current);
            }
            onClose();
         }} className="w-10 h-10 rounded-full bg-white/10 hover:bg-red-500 transition-all flex items-center justify-center">
