@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, StudentData, Lesson, Transaction, Role } from '../types';
-import { getStudentData, executeCreditTransfer, getTransactions, getAccountBalance, autoUpdateLessonStatuses, updateLessonInStudent, deleteLessonFromStudent, clearStudentLessonData, getUsers, executeStudentTransfer, checkAuditStatus, getAuditStatusesBulk, getCourses, getClasses, getTopics } from '../storage2';
+import { getStudentData, executeCreditTransfer, getTransactions, getAccountBalance, autoUpdateLessonStatuses, updateLessonInStudent, deleteLessonFromStudent, clearStudentLessonData, getPublicUsers, executeStudentTransfer, checkAuditStatus, getAuditStatusesBulk, getCourses, getClasses, getTopics } from '../storage2';
 import { getAiProvider, setAiProvider } from '../geminiService2';
 import Calendar from './Calendar';
 import VirtualClassroom from './VirtualClassroom';
@@ -120,7 +120,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
         getStudentData(user.username),
         getTransactions(ownerId),
         getAccountBalance(ownerId),
-        getUsers()
+        getPublicUsers()
       ]);
       setData(studentData);
       setTransactions(history);
@@ -676,13 +676,14 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
               <button 
                 onClick={async () => {
                   try {
-                    const { updateUser, getUsers } = await import('../storage2');
-                    const users = await getUsers();
-                    const currentUser = users.find(u => u.username === user.username);
-                    if (currentUser) {
-                      await updateUser(user.username, { ...currentUser, student_profile: studentProfile, preferred_teacher_profile: teacherProfile });
-                      alert('Perfil guardado exitosamente.');
-                    }
+                    const { updateUser } = await import('../storage2');
+                    await updateUser(user.username, { 
+                      username: user.username,
+                      email: user.email,
+                      student_profile: studentProfile, 
+                      preferred_teacher_profile: teacherProfile 
+                    } as any);
+                    alert('Perfil guardado exitosamente.');
                   } catch (e) {
                     console.error(e);
                     alert('Error al guardar el perfil.');

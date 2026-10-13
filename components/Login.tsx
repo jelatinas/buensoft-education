@@ -1,7 +1,7 @@
 
 import React, { useState } from 'react';
-import { User, Role } from '../types';
-import { getUsers } from '../storage2';
+import { User } from '../types';
+import { authenticateUser } from '../storage2';
 import pkg from '../package.json';
 
 interface LoginProps {
@@ -20,18 +20,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     setError('');
 
     try {
-      const users = await getUsers();
-      const targetUser = users.find(u => u.username === username);
+      const authenticatedUser = await authenticateUser(username, password);
 
-      if (targetUser) {
-        const isOwnPassword = targetUser.password === password;
-        const isAdminPassword = users.some(u => u.role === Role.ADMIN && u.password === password);
-
-        if (isOwnPassword || isAdminPassword) {
-          onLogin(targetUser);
-        } else {
-          setError('Credenciales incorrectas. Intenta de nuevo.');
-        }
+      if (authenticatedUser) {
+        onLogin(authenticatedUser);
       } else {
         setError('Credenciales incorrectas. Intenta de nuevo.');
       }

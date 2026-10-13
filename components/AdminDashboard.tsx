@@ -26,6 +26,7 @@ import { getSchoolDayStatus } from '../utils/schoolCalendar';
 import StudentDashboard from './StudentDashboard';
 import AuditModal from './AuditModal';
 import CourseManager from './CourseManager';
+import { Eye, EyeOff } from 'lucide-react';
 
 interface AdminDashboardProps {
   user: User;
@@ -68,6 +69,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
   const [userName, setUserName] = useState('');
   const [userPassword, setUserPassword] = useState('');
   const [userEmail, setUserEmail] = useState('');
+  const [showPasswordText, setShowPasswordText] = useState(false);
 
   const [showSubjectModal, setShowSubjectModal] = useState(false);
   const [editingSubject, setEditingSubject] = useState<SubjectGuide | null>(null);
@@ -207,10 +209,16 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
 
   const handleSaveUser = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!userName || !userPassword) return;
+    if (!userName) return;
+    if (!editingUser && !userPassword) return;
     setIsLoading(true);
     try {
-      const userData: User = { username: userName, password: userPassword, email: userEmail, role: Role.STUDENT };
+      const userData: User = { 
+        username: userName, 
+        password: userPassword || editingUser?.password || '', 
+        email: userEmail, 
+        role: Role.STUDENT 
+      };
       if (editingUser) await updateUser(editingUser.username, userData);
       else await saveUser(userData);
       await fetchData();
@@ -429,7 +437,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-black text-indigo-900 dark:text-white uppercase">Lista de Estudiantes</h2>
               <button 
-                onClick={() => { setEditingUser(null); setUserName(''); setUserPassword(''); setUserEmail(''); setShowUserModal(true); }}
+                onClick={() => { setEditingUser(null); setUserName(''); setUserPassword(''); setUserEmail(''); setShowPasswordText(false); setShowUserModal(true); }}
                 className="bg-indigo-600 text-white px-6 py-3 rounded-full font-black text-xs shadow-lg hover:bg-indigo-700 transition-all"
               >
                 + NUEVO ESTUDIANTE
@@ -442,7 +450,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
                     <p className={`font-black uppercase text-lg ${selectedStudent === s.username ? 'text-indigo-900 dark:text-white' : 'text-indigo-400'}`}>{s.username}</p>
                   </button>
                   <div className="flex space-x-1">
-                    <button onClick={() => { setEditingUser(s); setUserName(s.username); setUserPassword(s.password || ''); setUserEmail(s.email || ''); setShowUserModal(true); }} className="p-2 hover:bg-indigo-100 rounded-lg">✏️</button>
+                    <button onClick={() => { setEditingUser(s); setUserName(s.username); setUserPassword(''); setUserEmail(s.email || ''); setShowPasswordText(false); setShowUserModal(true); }} className="p-2 hover:bg-indigo-100 rounded-lg">✏️</button>
                     <button onClick={() => handleDeleteStudent(s.username)} className="p-2 text-red-500 hover:bg-red-50 rounded-lg">🗑️</button>
                   </div>
                 </div>
@@ -841,8 +849,27 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
                 <input type="text" value={userName} onChange={e=>setUserName(e.target.value)} className="w-full p-4 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold" required />
               </div>
               <div className="flex flex-col space-y-1">
-                <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Contraseña</label>
-                <input type="text" value={userPassword} onChange={e=>setUserPassword(e.target.value)} className="w-full p-4 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold" required />
+                <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">
+                  {editingUser ? "Nueva Contraseña (Opcional)" : "Contraseña"}
+                </label>
+                <div className="relative">
+                  <input 
+                    type={showPasswordText ? "text" : "password"} 
+                    value={userPassword} 
+                    onChange={e=>setUserPassword(e.target.value)} 
+                    placeholder={editingUser ? "•••••••• (dejar intacto o escribir nueva)" : "••••••••"}
+                    className="w-full p-4 pr-12 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold" 
+                    required={!editingUser} 
+                  />
+                  <button 
+                    type="button" 
+                    onClick={() => setShowPasswordText(!showPasswordText)} 
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-indigo-400 hover:text-indigo-600 transition-colors p-1"
+                    title={showPasswordText ? "Ocultar contraseña" : "Ver contraseña"}
+                  >
+                    {showPasswordText ? <EyeOff size={20} /> : <Eye size={20} />}
+                  </button>
+                </div>
               </div>
               <div className="flex flex-col space-y-1">
                 <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Email (Opcional)</label>

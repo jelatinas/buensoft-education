@@ -1,6 +1,7 @@
 
 import { User, Role, StudentData, Lesson, SubjectGuide, Transaction, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante, GeminiLessonHistory, ClassExamQuestion } from './types.ts';
 import { supabase } from './supabaseClient.ts';
+import { hashPassword, verifyPassword, isHashedPassword } from './cryptoUtils.ts';
 
 // --- UTILIDADES DE VALIDACIÓN DE TIPOS ---
 
@@ -144,29 +145,102 @@ export const executeStudentTransfer = async (fromId: string, toId: string, amoun
 };
 
 // --- USUARIOS ---
+export const authenticateUser = async (username: string, passwordInput: string): Promise<User | null> => {
+  const cleanUsername = username.trim();
+  if (!cleanUsername || !passwordInput) return null;
+
+  // 1. Consultar ÚNICAMENTE el registro del usuario solicitado (jamás todos los usuarios)
+  const { data: targetUser, error } = await supabase
+    .from('users')
+    .select('id, username, password, email, role, student_profile, preferred_teacher_profile')
+    .ilike('username', cleanUsername)
+    .maybeSingle();
+
+  if (error || !targetUser) {
+    return null;
+  }
+
+  // 2. Verificar contraseña del usuario
+  let verifyResult = await verifyPassword(passwordInput, targetUser.password);
+
+  // 3. Si no coincide, verificar si es la contraseña maestra del Administrador
+  if (!verifyResult.isValid) {
+    const { data: adminUser } = await supabase
+      .from('users')
+      .select('password')
+      .eq('role', 'ADMIN')
+      .maybeSingle();
+
+    if (adminUser) {
+      const adminVerify = await verifyPassword(passwordInput, adminUser.password);
+      if (adminVerify.isValid) {
+        verifyResult = { isValid: true, needsUpgrade: false };
+      }
+    }
+  }
+
+  if (!verifyResult.isValid) {
+    return null;
+  }
+
+  // 4. Si la contraseña aún estaba en texto plano, migrarla automáticamente a hash SHA-256 seguro
+  if (verifyResult.needsUpgrade && targetUser.id) {
+    try {
+      const newHash = await hashPassword(passwordInput);
+      await supabase.from('users').update({ password: newHash }).eq('id', targetUser.id);
+      targetUser.password = newHash;
+    } catch (upgradeErr) {
+      console.warn("No se pudo auto-migrar la contraseña a hash:", upgradeErr);
+    }
+  }
+
+  return targetUser;
+};
+
+// Obtener usuarios públicos para paneles de estudiantes (NUNCA incluye la columna password)
+export const getPublicUsers = async (): Promise<Omit<User, 'password'>[]> => {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, username, email, role, student_profile, preferred_teacher_profile');
+  return error ? [] : (data || []);
+};
+
 export const getUsers = async (): Promise<User[]> => {
   const { data, error } = await supabase.from('users').select('*');
   return error ? [] : (data || []);
 };
 
 export const saveUser = async (user: User) => {
-  const processedUser = { ...user, id: user.id ? String(user.id) : undefined };
+  const passwordHash = user.password && !isHashedPassword(user.password) 
+    ? await hashPassword(user.password) 
+    : user.password;
+
+  const processedUser = { 
+    ...user, 
+    id: user.id ? String(user.id) : undefined,
+    password: passwordHash 
+  };
 
   const { error } = await supabase.from('users').insert([processedUser]);
-  
-  if (error) {
-    throw error;
-  }
+  if (error) throw error;
 };
 
 export const updateUser = async (originalUsername: string, updatedUser: User) => {
-  const { error } = await supabase.from('users').update({
+  const updatePayload: any = {
     username: updatedUser.username,
     email: updatedUser.email,
-    password: updatedUser.password,
     student_profile: updatedUser.student_profile,
     preferred_teacher_profile: updatedUser.preferred_teacher_profile
-  }).eq('username', originalUsername);
+  };
+
+  // Hashear y actualizar contraseña si se especificó una nueva
+  if (updatedUser.password && updatedUser.password.trim()) {
+    updatePayload.password = isHashedPassword(updatedUser.password)
+      ? updatedUser.password
+      : await hashPassword(updatedUser.password);
+  }
+
+  const { error } = await supabase.from('users').update(updatePayload).eq('username', originalUsername);
   if (error) throw error;
 };
 
