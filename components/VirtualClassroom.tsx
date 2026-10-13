@@ -68,6 +68,70 @@ const processAIResponse = (rawText: string): string => {
   return aiText;
 };
 
+export const checkMCQAnswer = (
+  selectedOpt: string,
+  correctField: string,
+  options: string[] = []
+): boolean => {
+  if (!selectedOpt || !correctField) return false;
+
+  const normalize = (s: string) =>
+    String(s || '')
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]/g, '');
+
+  const stripPrefix = (s: string) =>
+    normalize(String(s || '').replace(/^[a-d0-9][\)\.\:\-\s]+\s*/i, ''));
+
+  const normSelected = normalize(selectedOpt);
+  const cleanSelected = stripPrefix(selectedOpt);
+  const normCorrect = normalize(correctField);
+  const cleanCorrect = stripPrefix(correctField);
+
+  // 1. Direct text match
+  if (normSelected === normCorrect || (cleanSelected.length > 0 && cleanSelected === cleanCorrect)) {
+    return true;
+  }
+
+  // 2. If correctField is a single letter (A, B, C, D) or index (0, 1, 2, 3 / 1, 2, 3, 4)
+  const letters = ['a', 'b', 'c', 'd'];
+  const correctLetterIdx = letters.indexOf(normCorrect);
+  const correctNumIdx = parseInt(normCorrect, 10);
+
+  const selectedIdx = options.findIndex(o => {
+    const n = normalize(o);
+    const c = stripPrefix(o);
+    return n === normSelected || (cleanSelected.length > 0 && c === cleanSelected);
+  });
+
+  if (correctLetterIdx !== -1 && selectedIdx !== -1 && selectedIdx === correctLetterIdx) {
+    return true;
+  }
+  if (!isNaN(correctNumIdx) && selectedIdx !== -1) {
+    if (selectedIdx === correctNumIdx || selectedIdx === correctNumIdx - 1) {
+      return true;
+    }
+  }
+
+  // 3. Match against options array to resolve if correctField matches an option
+  if (options.length > 0) {
+    const matchedCorrectOpt = options.find(o => {
+      const n = normalize(o);
+      const c = stripPrefix(o);
+      return n === normCorrect || (cleanCorrect.length > 0 && c === cleanCorrect);
+    });
+    if (matchedCorrectOpt) {
+      const nMatch = normalize(matchedCorrectOpt);
+      const cMatch = stripPrefix(matchedCorrectOpt);
+      return nMatch === normSelected || (cleanSelected.length > 0 && cMatch === cleanSelected);
+    }
+  }
+
+  return false;
+};
+
 const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClose, onLessonAccredited, isAdminAudit = false, isEmbedded = false }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -608,7 +672,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     currentMessages: ChatMessage[],
     skipUserBubble: boolean = false,
     mcqIsCorrect?: boolean,
-    customFeedback?: string
+    customFeedback?: string,
+    mcqExpectedCorrect?: string
   ) => {
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
     const minRequiredSeconds = Math.round(targetSeconds * 0.50);
@@ -624,6 +689,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     // Extract last question for evaluator
     const lastModelMessage = currentMessages.filter(m => m.role === 'model' && !m.isError && !m.isStreaming).pop();
     let lastQuestion = "";
+    let lastCorrect = mcqExpectedCorrect || "";
     if (lastModelMessage) {
       let match = lastModelMessage.parts[0].text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
       if (!match) {
@@ -634,6 +700,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         try {
           const data = JSON.parse(match[1]);
           lastQuestion = data.question || lastModelMessage.parts[0].text;
+          if (!lastCorrect && data.correct) lastCorrect = data.correct;
         } catch (e) {
           lastQuestion = lastModelMessage.parts[0].text;
         }
@@ -649,7 +716,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       let evalResult;
       // Skip AI evaluation for MCQ - we already know if it's correct
       if (mcqIsCorrect !== undefined) {
-        const explanation = customFeedback || lastAskedMCQExplanationRef.current || (mcqIsCorrect ? "La respuesta elegida fue la correcta." : "La respuesta elegida fue incorrecta.");
+        const explanation = customFeedback || (mcqIsCorrect ? "La respuesta elegida fue la correcta." : `Opción incorrecta. Seleccionaste "${studentAnswer}", pero la respuesta correcta era: "${lastCorrect}".`);
         evalResult = { 
           aprobado: mcqIsCorrect, 
           retroalimentacion: explanation 
@@ -698,13 +765,21 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
           setMood('happy');
         }
       } else {
+        // Reset de aciertos del tema para asegurar que responda 2 correctas de este tema
+        newCorrectAnswers = 0;
         setCombo(0);
         setMood('oops');
       }
       
       setCorrectAnswersForTopic(newCorrectAnswers);
       correctAnswersRef.current = newCorrectAnswers;
-      teacherContext = evalResult.retroalimentacion;
+
+      const currentTopicForContext = lesson.microtemas?.[newCompletedTopics < totalTopics ? newCompletedTopics : (totalTopics - 1)];
+      if (!evalResult.aprobado) {
+        teacherContext = `[RESPUESTA_INCORRECTA: El estudiante respondió "${studentAnswer}" a la pregunta: "${lastQuestion}". La respuesta correcta era: "${lastCorrect}". Explica de forma breve y pedagógica (máximo 40 palabras) por qué "${studentAnswer}" es incorrecta y aclara el concepto. NO avances al siguiente tema; seguimos en el MISMO tema: "${currentTopicForContext?.titulo}". Formula una NUEVA pregunta de Opción Múltiple (MCQ) sobre este MISMO tema con un EJEMPLO DE LA VIDA DIARIA DIFERENTE para que el estudiante vuelva a intentarlo].`;
+      } else {
+        teacherContext = evalResult.retroalimentacion;
+      }
     }
 
     if (isTopicCompleted) {
@@ -833,8 +908,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       return;
     }
 
-    // INSTANT PRELOADED MCQ CHECK
-    if (mcqIsCorrect !== undefined && !isReadyForExamNow && !isTopicCompleted) {
+    // INSTANT PRELOADED MCQ CHECK - Solo si la respuesta fue correcta (si falló, la IA debe analizar el error)
+    if (mcqIsCorrect === true && !isReadyForExamNow && !isTopicCompleted) {
        const askedList = getAskedQuestionsFromMessages(messages);
        const validPreloaded = preloadedMCQs.filter(q => !askedList.some(a => isSimilarQuestion(q.question, a)));
        if (validPreloaded.length > 0) {
@@ -949,15 +1024,24 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const handleMCQSelect = async (opt: string, correctAnswer: string, messageIndex: number) => {
     if (isLoading || isPaused || isAdminAudit || activeGame || preparingGame) return;
     
-    // BULLETPROOF NORMALIZATION: strip all spaces, punctuation, and special characters. 
-    // Only compare the core letters and numbers to avoid any mismatch.
-    const normalize = (s: any) => String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '');
+    const modelMsg = messages[messageIndex];
+    let qData: any = null;
+    if (modelMsg && modelMsg.parts[0]?.text) {
+      const match = modelMsg.parts[0].text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+      if (match) {
+        try { qData = JSON.parse(match[1]); } catch(e) {}
+      }
+    }
+
+    const effectiveCorrect = correctAnswer || qData?.correct || '';
+    const effectiveOptions = qData?.options || [];
+    const isCorrect = checkMCQAnswer(opt, effectiveCorrect, effectiveOptions);
     
-    // Mark selection immediately for visual feedback
-    const isCorrect = normalize(opt) === normalize(correctAnswer) || normalize(correctAnswer).includes(normalize(opt)) || normalize(opt).includes(normalize(correctAnswer));
-    setMcqSelections(prev => ({ ...prev, [messageIndex]: { selected: opt, correct: correctAnswer } }));
+    setMcqSelections(prev => ({ ...prev, [messageIndex]: { selected: opt, correct: effectiveCorrect } }));
     
-    const feedbackText = lastAskedMCQExplanationRef.current || (isCorrect ? "¡Excelente! Has elegido la opción correcta." : `Opción incorrecta. La respuesta correcta era: "${correctAnswer}".`);
+    const feedbackText = isCorrect 
+      ? (lastAskedMCQExplanationRef.current || "¡Excelente! Has elegido la opción correcta.") 
+      : `Opción incorrecta. Seleccionaste "${opt}", pero la respuesta correcta es: "${effectiveCorrect}".`;
 
     const userMsg: ChatMessage = {
       role: 'user',
@@ -972,7 +1056,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       currentMsgs[messageIndex] = { ...currentMsgs[messageIndex], selectedOption: opt, is_correct: isCorrect };
       const msgsWithUser = [...currentMsgs, userMsg];
       setMessages(msgsWithUser);
-      await generateAndAppendTeacherResponse(opt, msgsWithUser, false, isCorrect, feedbackText);
+      await generateAndAppendTeacherResponse(opt, msgsWithUser, false, isCorrect, feedbackText, effectiveCorrect);
     } catch (err: any) {
       console.error(err);
       const errorMsg: ChatMessage = { 
@@ -1142,7 +1226,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.17</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.18</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
@@ -1172,14 +1256,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                {questionData.type === 'MCQ' && questionData.options && (
                  <div className="grid gap-2">
                    {questionData.options.map((opt: string, i: number) => {
-                     const normalize = (s: any) => String(s || '').toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '');
-                     const checkMatch = (a: string, b: string) => {
-                        const nA = normalize(a); const nB = normalize(b);
-                        return nA === nB || (nA.length > 5 && nB.length > 5 && (nA.includes(nB) || nB.includes(nA)));
-                     };
-                     
-                     const isSelected = mcqSelection ? checkMatch(mcqSelection.selected, opt) : false;
-                     const isCorrectOpt = checkMatch(opt, questionData.correct) || (mcqSelection && checkMatch(opt, mcqSelection.correct));
+                     const isSelected = mcqSelection ? checkMCQAnswer(opt, mcqSelection.selected, [opt]) : false;
+                     const effectiveCorrectForOpt = questionData.correct || (mcqSelection && mcqSelection.correct) || '';
+                     const isCorrectOpt = checkMCQAnswer(opt, effectiveCorrectForOpt, questionData.options);
                      
                      let btnClass = "text-left w-full p-4 rounded-xl font-bold border-2 transition-all ";
                      let icon = null;

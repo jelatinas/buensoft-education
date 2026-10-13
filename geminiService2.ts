@@ -452,12 +452,12 @@ Formula una pregunta COMPLETAMENTE NUEVA, con un enfoque o situación diferente 
   let prompt = "";
   if (isReviewMode) {
      if (feedbackContext === "FINAL_REVIEW_INTERACTION") {
-        prompt = `El estudiante ha completado todos los temas y ha cumplido satisfactoriamente con por lo menos el 75% del tiempo asignado de estudio. Evalúa brevemente su última respuesta con entusiasmo profesional y dile explícitamente: "¡Felicidades! Has completado el tiempo de estudio requerido y dominas los temas. Generando examen de evaluación personalizada...". NO HAGAS NINGUNA PREGUNTA NUEVA.
+        prompt = `El estudiante ha completado todos los temas y ha cumplido satisfactoriamente con por lo menos el 50% del tiempo asignado de estudio. Evalúa brevemente su última respuesta con entusiasmo profesional y dile explícitamente: "¡Felicidades! Has completado el tiempo de estudio requerido y dominas los temas. Generando examen de evaluación personalizada...". NO HAGAS NINGUNA PREGUNTA NUEVA.
 FORMATO OBLIGATORIO:
 [EXPLICACION] <Tu evaluación aquí>. Generando examen de evaluación personalizada... [/EXPLICACION]`;
      } else {
         const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\\n') || '';
-        prompt = `El estudiante ha completado todos los temas pero está en MODO DE REPASO OBLIGATORIO para cumplir con por lo menos el 75% del tiempo asignado antes de mostrarle la opción de tomar el examen.
+        prompt = `El estudiante ha completado todos los temas pero está en MODO DE REPASO OBLIGATORIO para cumplir con por lo menos el 50% del tiempo asignado antes de mostrarle la opción de tomar el examen.
 Hazle UNA pregunta de repaso de Opción Múltiple (MCQ) al azar, basada ESPECÍFICAMENTE en uno de los temas vistos hoy:
 ${topicsList}
 
@@ -500,9 +500,14 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
         // Interacciones subsecuentes
         prompt = `Tema actual (${topicIndex + 1}/10): "${currentTopic.titulo}". Contenido de referencia: "${studentFacingText(currentTopic.contenido) || 'No hay un texto válido guardado. Explica el tema solo a partir del título, sin mencionar notas internas.'}".
 Instrucciones: ${feedbackContext 
-  ? `El estudiante acaba de responder a una pregunta. Feedback previo: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que consolide lo aprendido (si era el último tema anterior, felicítalo). 
+  ? `${feedbackContext.includes('RESPUESTA_INCORRECTA') 
+      ? `ATENCIÓN: El estudiante respondió de forma INCORRECTA. Instrucciones del profesor: "${feedbackContext}". 
+En tu explicación dentro de [EXPLICACION], explica brevemente y con empatía pedagógica (máximo 40 palabras) por qué la opción que eligió el estudiante NO es correcta y aclara el concepto.
+ESTÁ ESTRICTAMENTE PROHIBIDO felicitarlo por avanzar o cambiar de tema. Seguimos en el MISMO TEMA (${topicIndex + 1}/10): "${currentTopic.titulo}".
+Formula UNA NUEVA PREGUNTA (preferentemente de Opción Múltiple MCQ) sobre este MISMO tema con un EJEMPLO DE LA VIDA DIARIA DIFERENTE para que vuelva a intentarlo.`
+      : `El estudiante acaba de responder a una pregunta. Feedback previo: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que consolide lo aprendido (si era el último tema anterior, felicítalo). 
 Luego, si estamos avanzando a un NUEVO tema (el título del tema actual es nuevo para el estudiante), preséntalo obligatoriamente poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA. 
-Si seguimos en el MISMO tema, solo da el feedback y continúa.`
+Si seguimos en el MISMO tema, solo da el feedback y continúa.`}`
   : `Presenta el tema actual poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA.`}
 
 ${excludedQuestionsSection}
