@@ -112,9 +112,33 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadApp = async () => {
       await initStorage();
+      let user: User | null = null;
       const storedUser = localStorage.getItem('current_user');
       if (storedUser) {
-        const user = JSON.parse(storedUser);
+        user = JSON.parse(storedUser);
+      } else {
+        // Revisar si existe sesión compartida de Google SSO (.buensoft.com)
+        const match = document.cookie.match(/(?:^|;\s*)buensoft_user=([^;]*)/);
+        if (match) {
+          try {
+            const ssoData = JSON.parse(decodeURIComponent(match[1]));
+            if (ssoData && ssoData.email) {
+              const username = ssoData.email.split('@')[0];
+              user = {
+                id: ssoData.sub || ssoData.id || username,
+                username: username,
+                role: Role.STUDENT,
+                email: ssoData.email
+              };
+              localStorage.setItem('current_user', JSON.stringify(user));
+            }
+          } catch (e) {
+            console.warn('Error leyendo buensoft_user cookie:', e);
+          }
+        }
+      }
+
+      if (user) {
         setCurrentUser(user);
         if (user.role === Role.STUDENT) {
           await autoUpdateLessonStatuses(user.username);
