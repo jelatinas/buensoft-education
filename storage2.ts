@@ -1,4 +1,4 @@
-
+﻿
 import { User, Role, StudentData, Lesson, SubjectGuide, Transaction, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante, GeminiLessonHistory, ClassExamQuestion } from './types.ts';
 import { supabase } from './supabaseClient.ts';
 import { hashPassword, verifyPassword, isHashedPassword } from './cryptoUtils.ts';
@@ -1183,4 +1183,114 @@ export const getCachedEvaluation = async (question: string, studentAnswer: strin
 export const saveEvaluationToCache = async (question: string, studentAnswer: string, isCorrect: boolean, feedback: string) => {
   const { error } = await supabase.from('cached_evaluations').insert({ question_text: question, student_answer: studentAnswer, is_correct: isCorrect, feedback });
   if (error) console.error('Error saving cached eval:', error);
+};
+
+
+// ==========================================
+// REGISTRO Y MATERIAS DEMO PARA ESTUDIANTES
+// ==========================================
+
+/**
+ * Calcula 3 fechas de clase alternadas (un día sí y un día no, saltando fines de semana)
+ * Por ejemplo, si inicia en jueves: Jueves, Lunes, Miércoles.
+ */
+export const getDemoLessonDates = (startDateStr?: string): string[] => {
+  const dates: string[] = [];
+  const start = startDateStr ? new Date(startDateStr + 'T12:00:00') : new Date();
+  let current = new Date(start);
+
+  // Si se registra en fin de semana, comenzar el próximo lunes
+  while (current.getDay() === 0 || current.getDay() === 6) {
+    current.setDate(current.getDate() + 1);
+  }
+
+  let shouldAssign = true;
+
+  while (dates.length < 3) {
+    const dayOfWeek = current.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+    if (!isWeekend) {
+      if (shouldAssign) {
+        dates.push(current.toISOString().split('T')[0]);
+        shouldAssign = false;
+      } else {
+        shouldAssign = true;
+      }
+    }
+
+    current.setDate(current.getDate() + 1);
+    if (current.getFullYear() > 2028) break;
+  }
+
+  return dates;
+};
+
+/**
+ * Registra un nuevo estudiante en la base de datos
+ */
+export const registerStudent = async (username: string, password?: string, email?: string): Promise<User> => {
+  const cleanUsername = username.trim().toLowerCase();
+  if (!cleanUsername) throw new Error('El nombre de usuario es requerido.');
+  if (cleanUsername.length < 3) throw new Error('El nombre de usuario debe tener al menos 3 caracteres.');
+
+  // Verificar si ya existe
+  const { data: existing } = await supabase
+    .from('users')
+    .select('username')
+    .eq('username', cleanUsername)
+    .maybeSingle();
+
+  if (existing) {
+    throw new Error('Ese nombre de usuario ya está registrado. Por favor elige otro.');
+  }
+
+  const newUser: User = {
+    username: cleanUsername,
+    password: password || '123456',
+    email: email ? email.trim() : undefined,
+    role: Role.STUDENT
+  };
+
+  await saveUser(newUser);
+  return newUser;
+};
+
+/**
+ * Asigna una materia Demo en automático con 3 clases gratis por una semana
+ * (un día sí y un día no).
+ */
+export const assignDemoCourseToStudent = async (username: string, courseId: string | number) => {
+  const [courses, classes] = await Promise.all([
+    getCourses(),
+    getClasses(courseId)
+  ]);
+
+  if (!classes || classes.length === 0) {
+    throw new Error('Este curso aún no tiene clases disponibles para la demostración.');
+  }
+
+  const courseObj = courses.find((c: any) => String(c.id) === String(courseId));
+  const courseName = courseObj ? courseObj.nombre : 'Curso Demo';
+
+  // Tomar las primeras 3 clases
+  const demoClasses = classes.slice(0, 3);
+  const dates = getDemoLessonDates();
+
+  for (let i = 0; i < demoClasses.length; i++) {
+    const cls = demoClasses[i];
+    const dateStr = dates[i] || dates[dates.length - 1];
+
+    await addLessonToStudent(username, {
+      id: `demo-${Date.now()}-${i}`,
+      subject: courseName,
+      title: cls.titulo,
+      learningPrompt: `Clase Demo de prueba para ${courseName}.`,
+      durationMinutes: cls.assigned_time_minutes || 30,
+      date: dateStr,
+      completed: false
+    });
+  }
+
+  return { courseName, classesCount: demoClasses.length, dates };
 };

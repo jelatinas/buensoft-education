@@ -1,6 +1,24 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { User, StudentData, Lesson, Transaction, Role } from '../types';
-import { getStudentData, executeCreditTransfer, getTransactions, getAccountBalance, autoUpdateLessonStatuses, updateLessonInStudent, deleteLessonFromStudent, clearStudentLessonData, getPublicUsers, executeStudentTransfer, checkAuditStatus, getAuditStatusesBulk, getCourses, getClasses, getTopics } from '../storage2';
+import { 
+  getStudentData, 
+  executeCreditTransfer, 
+  getTransactions, 
+  getAccountBalance, 
+  autoUpdateLessonStatuses, 
+  updateLessonInStudent, 
+  deleteLessonFromStudent, 
+  clearStudentLessonData, 
+  getPublicUsers, 
+  executeStudentTransfer, 
+  checkAuditStatus, 
+  getAuditStatusesBulk, 
+  getCourses, 
+  getClasses, 
+  getTopics,
+  assignDemoCourseToStudent,
+  getDemoLessonDates
+} from '../storage2';
 import { getAiProvider, setAiProvider } from '../geminiService2';
 import Calendar from './Calendar';
 import VirtualClassroom from './VirtualClassroom';
@@ -25,7 +43,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   initialSelectedDate,
   lastFinishedLessonId: propsLastFinishedId
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'aula' | 'banco'>('aula');
+  const [activeSubTab, setActiveSubTab] = useState<'aula' | 'banco' | 'cursos'>('aula');
   const [data, setData] = useState<StudentData | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [currentBalance, setCurrentBalance] = useState(0);
@@ -39,6 +57,20 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   } | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
   const [auditStatuses, setAuditStatuses] = useState<Record<string, { hasGeminiLesson: boolean, hasExamAttempts: boolean }>>({});
+
+  // Cursos y Catálogo
+  const [coursesList, setCoursesList] = useState<any[]>([]);
+  const [catalogSearch, setCatalogSearch] = useState('');
+  const [expandedCourseId, setExpandedCourseId] = useState<string | null>(null);
+  const [courseClassesMap, setCourseClassesMap] = useState<Record<string, any[]>>({});
+  const [loadingCourseClasses, setLoadingCourseClasses] = useState<Record<string, boolean>>({});
+  const [expandedClassTopics, setExpandedClassTopics] = useState<Record<string, any[]>>({});
+  const [loadingClassTopics, setLoadingClassTopics] = useState<Record<string, boolean>>({});
+
+  // Modal de Asignación Demo para Nuevos Estudiantes
+  const [showDemoModal, setShowDemoModal] = useState(false);
+  const [selectedDemoCourseId, setSelectedDemoCourseId] = useState<string>('');
+  const [isAssigningDemo, setIsAssigningDemo] = useState(false);
 
   // Estados para el Interceptor de Ruta
   const [pendingLesson, setPendingLesson] = useState<Lesson | null>(null);
@@ -95,6 +127,21 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   };
   const [weekStart, setWeekStart] = useState(() => getMonday(new Date()));
 
+  // Fechas Demo calculadas
+  const demoDates = useMemo(() => getDemoLessonDates(), []);
+
+  const formatFriendlyDate = (dateStr: string) => {
+    try {
+      const [y, m, d] = dateStr.split('-').map(Number);
+      const date = new Date(y, m - 1, d);
+      const dayName = date.toLocaleDateString('es-ES', { weekday: 'long' });
+      const formatted = date.toLocaleDateString('es-ES', { day: 'numeric', month: 'short' });
+      return `${dayName.charAt(0).toUpperCase() + dayName.slice(1)} (${formatted})`;
+    } catch {
+      return dateStr;
+    }
+  };
+
   // Mapeo de IDs a Nombres para el historial del estudiante
   const userMap = useMemo(() => {
     const map: Record<string, string> = { 
@@ -116,20 +163,28 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
     try {
       if (!isAdminView) await autoUpdateLessonStatuses(user.username);
       const ownerId = user.id || user.username;
-      const [studentData, history, balance, allUsers] = await Promise.all([
+      const [studentData, history, balance, allUsers, allCourses] = await Promise.all([
         getStudentData(user.username),
         getTransactions(ownerId),
         getAccountBalance(ownerId),
-        getPublicUsers()
+        getPublicUsers(),
+        getCourses()
       ]);
       setData(studentData);
       setTransactions(history);
       setCurrentBalance(balance);
       setOtherStudents(allUsers.filter(u => (u.id || u.username) !== ownerId && u.role === Role.STUDENT));
+      setCoursesList(allCourses || []);
+
       const currentUserData = allUsers.find(u => u.username === user.username);
       if (currentUserData) {
         setStudentProfile(currentUserData.student_profile || '');
         setTeacherProfile(currentUserData.preferred_teacher_profile || '');
+      }
+
+      // Si es un nuevo usuario sin clases asignadas, abrir automáticamente la pantalla de bienvenida y Demo
+      if (!isAdminView && (!studentData?.student_lessons || studentData.student_lessons.length === 0)) {
+        setShowDemoModal(true);
       }
     } catch (error) { console.error(error); } finally { setIsLoading(false); }
   };
@@ -198,105 +253,161 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
     const pending = currentWeekLessons.filter(l => (l.lesson_status === 'Aprobada' || l.lesson_status === 'Completada' || (l.grade && l.grade >= 6)) && !l.credits_transfered);
     const realSum = pending.reduce((acc, l) => acc + (l.grade || 0), 0);
     if (!window.confirm(`¿Confirmas transferencia de $${realSum}?`)) return;
+
     setIsTransferring(true);
     try {
-      const lessonIds = pending.map(l => String(l.id));
-      const studentId = user.id || user.username;
-      await executeCreditTransfer(studentId, user.username, realSum, `Semana [${weekStart.toISOString().split('T')[0]}]`, lessonIds);
-      alert("¡Transferencia exitosa!"); fetchData(); if (onBalanceUpdate) onBalanceUpdate();
-    } catch (err: any) { alert(err.message); } finally { setIsTransferring(false); }
+      await executeCreditTransfer(user.id || user.username, realSum, pending.map(l => String(l.id)));
+      await fetchData();
+      if (onBalanceUpdate) onBalanceUpdate();
+      alert("¡Transferencia completada!");
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Error al transferir.");
+    } finally {
+      setIsTransferring(false);
+    }
   };
 
   const handleFundsTransfer = async (e: React.FormEvent) => {
     e.preventDefault();
-    const amount = parseFloat(transferAmount);
-    if (!transferTo || isNaN(amount) || amount <= 0 || !transferConcept) return;
-    if (amount > currentBalance) { alert("Fondos insuficientes."); return; }
-    if (!window.confirm(`¿Transferir $${amount.toFixed(2)}?`)) return;
-    setIsTransferringFunds(true);
-    try {
-      await executeStudentTransfer(user.id || user.username, transferTo, amount, transferConcept);
-      alert("¡Éxito!"); setTransferAmount(''); setTransferConcept(''); setTransferTo(''); fetchData(); if (onBalanceUpdate) onBalanceUpdate();
-    } catch (err: any) { alert(err.message); } finally { setIsTransferringFunds(false); }
-  };
-
-  // Interceptor de acción al intentar entrar a una lección
-  const onHandleLessonClick = (lesson: Lesson) => {
-    if (isAdminView) {
-      if (onAuditLesson) onAuditLesson(lesson);
+    const amountNum = parseFloat(transferAmount);
+    if (!transferTo || isNaN(amountNum) || amountNum <= 0) {
+      alert("Ingresa un destinatario y monto válido.");
+      return;
+    }
+    if (amountNum > currentBalance) {
+      alert("Saldo insuficiente.");
+      return;
+    }
+    if (!transferConcept.trim()) {
+      alert("Ingresa un concepto.");
       return;
     }
 
+    setIsTransferringFunds(true);
+    try {
+      await executeStudentTransfer(user.id || user.username, transferTo, amountNum, transferConcept.trim());
+      await fetchData();
+      if (onBalanceUpdate) onBalanceUpdate();
+      setTransferTo('');
+      setTransferAmount('');
+      setTransferConcept('');
+      alert("¡Transferencia enviada con éxito!");
+    } catch (err: any) {
+      alert(err.message || "Error al procesar transferencia.");
+    } finally {
+      setIsTransferringFunds(false);
+    }
+  };
+
+  // Función para activar la materia Demo
+  const handleAssignDemo = async () => {
+    if (!selectedDemoCourseId) {
+      alert("Por favor selecciona una materia de la lista para tu demostración.");
+      return;
+    }
+
+    setIsAssigningDemo(true);
+    try {
+      const res = await assignDemoCourseToStudent(user.username, selectedDemoCourseId);
+      alert(`🎉 ¡Felicidades! Se ha activado tu materia DEMO: "${res.courseName}".\nSe programaron tus 3 clases gratuitas para los días:\n${res.dates.map(d => formatFriendlyDate(d)).join('\n')}`);
+      setShowDemoModal(false);
+      await fetchData();
+      setActiveSubTab('aula');
+    } catch (err: any) {
+      alert(err?.message || "Ocurrió un error al asignar tu materia demo.");
+    } finally {
+      setIsAssigningDemo(false);
+    }
+  };
+
+  // Funciones para el Catálogo de Cursos
+  const toggleExpandCourse = async (courseId: string) => {
+    if (expandedCourseId === courseId) {
+      setExpandedCourseId(null);
+      return;
+    }
+    setExpandedCourseId(courseId);
+    if (!courseClassesMap[courseId]) {
+      setLoadingCourseClasses(prev => ({ ...prev, [courseId]: true }));
+      try {
+        const classes = await getClasses(courseId);
+        setCourseClassesMap(prev => ({ ...prev, [courseId]: classes || [] }));
+      } catch (err) {
+        console.error("Error al cargar clases del curso:", err);
+      } finally {
+        setLoadingCourseClasses(prev => ({ ...prev, [courseId]: false }));
+      }
+    }
+  };
+
+  const toggleExpandClassTopics = async (classId: string) => {
+    if (expandedClassTopics[classId]) {
+      setExpandedClassTopics(prev => {
+        const copy = { ...prev };
+        delete copy[classId];
+        return copy;
+      });
+      return;
+    }
+    setLoadingClassTopics(prev => ({ ...prev, [classId]: true }));
+    try {
+      const topics = await getTopics(classId);
+      setExpandedClassTopics(prev => ({ ...prev, [classId]: topics || [] }));
+    } catch (err) {
+      console.error("Error al cargar temas de la clase:", err);
+    } finally {
+      setLoadingClassTopics(prev => ({ ...prev, [classId]: false }));
+    }
+  };
+
+  const onHandleLessonClick = async (lesson: Lesson) => {
+    if (isAdminView) {
+      if (auditStatuses[lesson.id]?.hasGeminiLesson) {
+        setAuditLesson(lesson);
+      } else {
+        alert("El estudiante aún no genera contenido para esta lección.");
+      }
+      return;
+    }
     setPendingLesson(lesson);
     setShowClassroom(true);
   };
 
-  const handleToggleExpand = async (lesson: Lesson) => {
-    if (expandedLessonId === String(lesson.id)) {
-      setExpandedLessonId(null);
-      return;
-    }
-    setExpandedLessonId(String(lesson.id));
-    setInlineTopics([]);
-    setIsFetchingInlineTopics(true);
-    
-    try {
-      const courses = await getCourses();
-      const course = courses.find(c => c.nombre.trim().toLowerCase() === lesson.subject.trim().toLowerCase());
-      if (course) {
-        const classes = await getClasses(course.id);
-        const classObj = classes.find(c => c.titulo.trim().toLowerCase() === lesson.title.trim().toLowerCase());
-        if (classObj) {
-          const topics = await getTopics(classObj.id);
-          setInlineTopics(topics);
-        }
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setIsFetchingInlineTopics(false);
-    }
-  };
-
-  const getLessonUIConfig = (status: string, isTransfered: boolean, lessonId: string | number) => {
-    const s = (status || 'Pendiente').toLowerCase();
-    const auditStatus = auditStatuses[String(lessonId)];
-    const canAudit = auditStatus?.hasGeminiLesson || auditStatus?.hasExamAttempts;
-
-    let defaultBtnText = isAdminView ? 'AUDITAR LECCIÓN' : 'TOMAR CLASE 🚀';
-    
-    let config = { 
-      color: 'bg-blue-600', 
-      label: 'PENDIENTE', 
-      btnText: defaultBtnText,
+  const getLessonUIConfig = (status: string, creditsTransfered: boolean, lessonId: string) => {
+    const canAudit = isAdminView ? !!auditStatuses[lessonId]?.hasGeminiLesson : false;
+    let config = {
+      color: 'bg-indigo-600',
+      label: 'PENDIENTE',
+      btnText: isAdminView ? 'AUDITAR LECCIÓN' : 'INICIAR CLASE 🚀',
       textColor: 'text-white',
       disabled: isAdminView ? !canAudit : false
     };
 
-    if (s === 'aprobada' || s === 'completada') {
-      config = isTransfered ? { 
-        color: 'bg-green-800', 
-        label: (s === 'completada' ? 'COMPLETADA' : 'APROBADA') + ' (PAGADA)', 
-        btnText: isAdminView ? 'AUDITAR LECCIÓN' : 'AUDITAR LECCIÓN ✨', 
-        textColor: 'text-white',
-        disabled: isAdminView ? !canAudit : false
-      }
-      : { 
-        color: 'bg-green-600', 
-        label: s === 'completada' ? 'COMPLETADA' : 'APROBADA', 
-        btnText: isAdminView ? 'AUDITAR LECCIÓN' : 'REPASAR LECCIÓN ✨', 
+    if (creditsTransfered) {
+      config = { 
+        color: 'bg-slate-400', 
+        label: 'CRÉDITOS TRANSFERIDOS', 
+        btnText: isAdminView ? 'AUDITAR LECCIÓN' : 'REVISAR CLASE 📖', 
         textColor: 'text-white',
         disabled: isAdminView ? !canAudit : false
       };
-    } else if (s === 'reprobada') {
+    } else if (status === 'Aprobada' || status === 'Completada') {
+      config = { 
+        color: 'bg-green-600', 
+        label: 'APROBADA', 
+        btnText: isAdminView ? 'AUDITAR LECCIÓN' : 'REPASAR CLASE 🔄', 
+        textColor: 'text-white',
+        disabled: isAdminView ? !canAudit : false
+      };
+    } else if (status === 'Reprobada') {
       config = { 
         color: 'bg-red-600', 
         label: 'REPROBADA', 
-        btnText: isAdminView ? 'AUDITAR LECCIÓN' : 'MEJORAR NOTA 🔁', 
+        btnText: isAdminView ? 'AUDITAR LECCIÓN' : 'REINTENTAR CLASE ⚠️', 
         textColor: 'text-white',
         disabled: isAdminView ? !canAudit : false
       };
-    } else if (s === 'en progreso') {
+    } else if (status === 'En Progreso') {
       config = { 
         color: 'bg-orange-500', 
         label: 'EN PROGRESO', 
@@ -367,27 +478,65 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   if (isLoading) return <div className="py-24 text-center"><div className="animate-spin w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full mx-auto mb-4"></div><p>Cargando...</p></div>;
 
+  const filteredCatalogCourses = coursesList.filter(c => 
+    c.nombre.toLowerCase().includes(catalogSearch.toLowerCase())
+  );
+
+  const hasNoLessons = !data?.student_lessons || data.student_lessons.length === 0;
+
   return (
     <div className="space-y-6 font-fredoka animate-in fade-in">
-      <div className="flex justify-between items-center bg-white dark:bg-indigo-900 p-2 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 shadow-sm">
-        <div className="flex">
-          <button onClick={() => setActiveSubTab('aula')} className={`px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase transition-all ${activeSubTab === 'aula' ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:bg-indigo-50'}`}>Aula Virtual 📚</button>
-          <button onClick={() => setActiveSubTab('banco')} className={`px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase transition-all ${activeSubTab === 'banco' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-500 hover:bg-amber-50'}`}>Estado de Cuenta 🏦</button>
+      <div className="flex flex-col md:flex-row justify-between items-stretch md:items-center bg-white dark:bg-indigo-900 p-2 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 shadow-sm gap-2">
+        <div className="flex bg-indigo-50 dark:bg-indigo-950 p-1 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 overflow-x-auto">
+          <button 
+            onClick={() => setActiveSubTab('aula')} 
+            className={`px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase transition-all whitespace-nowrap ${
+              activeSubTab === 'aula' ? 'bg-indigo-600 text-white shadow-md' : 'text-indigo-400 hover:text-indigo-600'
+            }`}
+          >
+            Aula Virtual 📚
+          </button>
+          <button 
+            onClick={() => setActiveSubTab('banco')} 
+            className={`px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase transition-all whitespace-nowrap ${
+              activeSubTab === 'banco' ? 'bg-amber-500 text-white shadow-md' : 'text-amber-500 hover:text-amber-600'
+            }`}
+          >
+            Estado de Cuenta 🏦
+          </button>
+          <button 
+            onClick={() => setActiveSubTab('cursos')} 
+            className={`px-4 md:px-6 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase transition-all whitespace-nowrap ${
+              activeSubTab === 'cursos' ? 'bg-purple-600 text-white shadow-md' : 'text-purple-500 hover:text-purple-600'
+            }`}
+          >
+            Cursos Disponibles 📖
+          </button>
         </div>
-        <div className="flex items-center">
+
+        <div className="flex items-center justify-end space-x-1">
+          {!isAdminView && hasNoLessons && (
+            <button 
+              onClick={() => setShowDemoModal(true)} 
+              className="px-3 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-xl text-[10px] md:text-xs font-black uppercase shadow-md hover:scale-105 transition-transform flex items-center gap-1 animate-pulse"
+            >
+              🎁 Materia Demo Gratis
+            </button>
+          )}
+
           <select 
             value={aiProvider} 
             onChange={handleProviderChange} 
-            className="px-3 py-2 bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-300 rounded-xl text-[10px] md:text-xs font-black uppercase border-2 border-indigo-100 dark:border-indigo-800 outline-none mr-2"
+            className="px-3 py-2 bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-300 rounded-xl text-[10px] md:text-xs font-black uppercase border-2 border-indigo-100 dark:border-indigo-800 outline-none"
           >
             <option value="gemini">Gemini</option>
             <option value="openrouter">OpenRouter (Auto)</option>
             <option value="cerebras">Llama 3.1 8B</option>
           </select>
-          <button onClick={() => setShowProfileSettings(true)} className="px-4 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+          <button onClick={() => setShowProfileSettings(true)} className="px-3 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
             Perfil 👤
           </button>
-          <button onClick={() => setShowAISettings(true)} className="px-4 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+          <button onClick={() => setShowAISettings(true)} className="px-3 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
             Llave IA ⚙️
           </button>
         </div>
@@ -395,6 +544,23 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
       {activeSubTab === 'aula' ? (
         <div className="space-y-6">
+          {hasNoLessons && !isAdminView && (
+            <div className="bg-gradient-to-r from-purple-500 to-indigo-600 text-white p-6 rounded-[2.5rem] shadow-lg flex flex-col md:flex-row items-center justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-black uppercase tracking-tight">🎉 ¡Aún no tienes clases asignadas!</h3>
+                <p className="text-xs font-bold text-indigo-100 mt-1">
+                  Activa tu <span className="underline">Materia DEMO Gratis</span> de 3 clases por una semana (un día sí y un día no) para comenzar de inmediato.
+                </p>
+              </div>
+              <button
+                onClick={() => setShowDemoModal(true)}
+                className="bg-white text-indigo-900 font-black px-6 py-3 rounded-2xl shadow-md text-xs uppercase tracking-wider hover:bg-indigo-50 transition-all shrink-0"
+              >
+                Elegir Materia Demo 🚀
+              </button>
+            </div>
+          )}
+
           <div className="bg-white dark:bg-indigo-900 p-6 rounded-[2.5rem] shadow-sm border-4 border-indigo-50 dark:border-indigo-800 flex flex-col md:flex-row items-center gap-6">
             <div className="flex space-x-8">
                <div className="bg-amber-50 dark:bg-amber-900/30 px-6 py-4 rounded-2xl border-2 border-amber-100 flex flex-col items-center min-w-[160px]">
@@ -448,75 +614,113 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                            </select>
                            <div className="grid grid-cols-2 gap-2">
                              <div>
-                               <label className="text-[8px] font-black text-indigo-400 uppercase">Temas (0-10)</label>
-                               <input type="number" min={0} max={10} value={quickEditDraft.completedTopicsCount} onChange={(e)=>setQuickEditDraft({...quickEditDraft, completedTopicsCount: parseInt(e.target.value)||0})} className="w-full bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100" />
+                               <label className="text-[8px] font-black text-indigo-400 uppercase">Temas</label>
+                               <input type="number" min="0" max="10" value={quickEditDraft.completedTopicsCount} onChange={(e)=>setQuickEditDraft({...quickEditDraft, completedTopicsCount: Number(e.target.value)})} className="w-full bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100" />
                              </div>
                              <div>
-                               <label className="text-[8px] font-black text-indigo-400 uppercase">Créditos (0-10)</label>
-                               <input type="number" min={0} max={10} value={quickEditDraft.grade} onChange={(e)=>setQuickEditDraft({...quickEditDraft, grade: parseInt(e.target.value)||0})} className="w-full bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100" />
+                               <label className="text-[8px] font-black text-indigo-400 uppercase">Créditos</label>
+                               <input type="number" min="0" max="10" value={quickEditDraft.grade} onChange={(e)=>setQuickEditDraft({...quickEditDraft, grade: Number(e.target.value)})} className="w-full bg-indigo-50 dark:bg-indigo-950 p-2 rounded-xl text-[10px] font-black border-2 border-indigo-100" />
                              </div>
                            </div>
-                           <button onClick={()=>handleSaveQuickEdit(lesson)} disabled={isUpdating} className="w-full py-2 bg-indigo-600 text-white text-[9px] font-black rounded-xl uppercase disabled:opacity-50">{isUpdating ? 'Guardando...' : 'Guardar cambios'}</button>
-                           <div className="grid grid-cols-2 gap-2"><button onClick={()=>handleClearHistory(lesson)} className="py-2 bg-amber-100 text-amber-600 text-[9px] font-black rounded-xl uppercase">Limpiar 🫧</button><button onClick={()=>{setQuickEditLessonId(null); setQuickEditDraft(null); onEditLessonDetails?.(lesson)}} className="py-2 bg-indigo-100 text-indigo-600 text-[9px] font-black rounded-xl uppercase">Editar ✏️</button></div>
-                           <button onClick={()=>handleDeleteLesson(String(lesson.id))} className="w-full py-2 bg-red-50 text-red-500 text-[9px] font-black rounded-xl uppercase">Eliminar 🗑️</button>
+                           <div className="flex space-x-2 pt-2">
+                             <button onClick={()=>handleSaveQuickEdit(lesson)} className="flex-1 bg-green-600 text-white font-black text-[10px] py-2 rounded-xl uppercase">Guardar</button>
+                             <button onClick={()=>handleClearHistory(lesson)} className="bg-orange-500 text-white font-black text-[10px] px-3 py-2 rounded-xl uppercase" title="Reiniciar chat y reprobar">Reiniciar</button>
+                             <button onClick={()=>handleDeleteLesson(lesson.id)} className="bg-red-600 text-white font-black text-[10px] px-3 py-2 rounded-xl uppercase" title="Eliminar lección">Borrar</button>
+                           </div>
                         </div>
                       )}
-                      <div 
-                        className="cursor-pointer group" 
-                        onClick={() => handleToggleExpand(lesson)}
-                      >
-                        <div className="flex justify-between items-center mb-4">
-                          <span className={`${ui.color} ${ui.textColor} text-[9px] font-black px-4 py-1.5 rounded-full uppercase tracking-wider`}>{lesson.subject}</span>
-                          {isAdminView && !isSelected && <button onClick={(e)=>{e.stopPropagation(); openQuickEdit(lesson)}} className="w-8 h-8 rounded-full bg-slate-100 text-indigo-400 hover:bg-indigo-600 hover:text-white">⚙️</button>}
-                        </div>
-                        <h4 className="text-lg font-black text-indigo-900 dark:text-white uppercase mb-4 leading-tight group-hover:text-indigo-600 transition-colors flex justify-between items-center">
-                          <span>🧠 {lesson.title}</span>
-                          <span className="text-xs opacity-50 bg-indigo-50 dark:bg-indigo-900 px-2 py-1 rounded-lg">
-                            {expandedLessonId === String(lesson.id) ? '▲ Ocultar' : '▼ Temario'}
-                          </span>
-                        </h4>
-                      </div>
 
-                      {expandedLessonId === String(lesson.id) && (
-                        <div className="mb-6 bg-indigo-50/50 dark:bg-indigo-900/20 p-5 rounded-2xl border border-indigo-100/50 animate-in slide-in-from-top-2 duration-200">
-                          <p className="text-[10px] font-black text-indigo-400 uppercase mb-3 tracking-widest">Temas a estudiar hoy:</p>
-                          {isFetchingInlineTopics ? (
-                            <div className="space-y-2">
-                              {[1,2].map(i => <div key={i} className="h-4 bg-indigo-100 dark:bg-indigo-800/50 rounded animate-pulse w-3/4"></div>)}
-                            </div>
-                          ) : inlineTopics.length > 0 ? (
-                            <ul className="space-y-2">
-                              {inlineTopics.map((topic, i) => (
-                                <li key={topic.id} className="text-xs font-bold text-indigo-900 dark:text-indigo-200 flex items-start">
-                                  <span className="text-amber-500 mr-2 mt-0.5">•</span> 
-                                  <span>{topic.titulo}</span>
-                                </li>
-                              ))}
-                            </ul>
-                          ) : (
-                            <p className="text-xs text-indigo-400 italic">No se encontraron temas detallados.</p>
+                      <div className="flex justify-between items-start mb-4">
+                        <div className="flex items-center space-x-2">
+                          <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${ui.color} ${ui.textColor}`}>
+                            {ui.label}
+                          </span>
+                          {isAdminView && (
+                            <button onClick={()=>openQuickEdit(lesson)} className="text-[10px] bg-indigo-50 dark:bg-indigo-900 border border-indigo-200 dark:border-indigo-700 px-2 py-1 rounded-lg text-indigo-600 dark:text-indigo-300 font-black hover:bg-indigo-100">
+                              ⚙️
+                            </button>
                           )}
                         </div>
+                        <span className="text-[10px] font-black text-indigo-300 uppercase">
+                          {lesson.durationMinutes || 30} MIN
+                        </span>
+                      </div>
+
+                      <p className="text-[10px] font-black text-indigo-400 dark:text-indigo-300 uppercase tracking-widest mb-1">
+                        {lesson.subject}
+                      </p>
+                      <h4 className="text-xl font-black text-indigo-950 dark:text-white uppercase leading-tight mb-2">
+                        {lesson.title}
+                      </h4>
+                      {lesson.learningPrompt && (
+                        <p className="text-xs text-indigo-600 dark:text-indigo-300 font-bold mb-4 line-clamp-2">
+                          {lesson.learningPrompt}
+                        </p>
                       )}
-                      
-                      <div className="grid grid-cols-2 gap-3 mb-6 text-center">
-                        <div className="bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-2xl border border-indigo-100/50 flex flex-col justify-center">
-                          <p className="text-[8px] font-black text-indigo-400 uppercase leading-none mb-1">Estatus</p>
-                          <p className={`text-[10px] font-black uppercase ${ui.color.replace('bg-', 'text-')}`}>
-                            {status}
-                          </p>
-                        </div>
-                        <div className="bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-2xl border border-indigo-100/50 flex flex-col justify-center">
-                          <p className="text-[8px] font-black text-indigo-400 uppercase leading-none mb-1">Tiempo</p>
-                          <p className="text-[10px] font-black text-indigo-900 dark:text-white">
-                            {Math.floor((lesson.elapsedSeconds || 0) / 60)}:{String((lesson.elapsedSeconds || 0) % 60).padStart(2, '0')}s / {lesson.durationMinutes}:00
-                          </p>
-                        </div>
+
+                      {/* Botón para ver Microtemas de la Clase */}
+                      <div className="mb-4">
+                        <button
+                          onClick={async () => {
+                            if (expandedLessonId === lesson.id) {
+                              setExpandedLessonId(null);
+                              setInlineTopics([]);
+                              return;
+                            }
+                            setExpandedLessonId(lesson.id);
+                            setIsFetchingInlineTopics(true);
+                            try {
+                              const courses = await getCourses();
+                              const course = courses.find((c: any) => c.nombre.toLowerCase() === (lesson.subject || '').toLowerCase());
+                              if (course) {
+                                const classes = await getClasses(course.id);
+                                const foundCls = classes.find((cl: any) => cl.titulo.toLowerCase() === lesson.title.toLowerCase());
+                                if (foundCls) {
+                                  const topics = await getTopics(foundCls.id);
+                                  setInlineTopics(topics);
+                                } else {
+                                  setInlineTopics([]);
+                                }
+                              } else {
+                                setInlineTopics([]);
+                              }
+                            } catch (e) {
+                              console.error(e);
+                              setInlineTopics([]);
+                            } finally {
+                              setIsFetchingInlineTopics(false);
+                            }
+                          }}
+                          className="text-[10px] font-black uppercase text-indigo-500 hover:text-indigo-700 dark:text-indigo-400 flex items-center gap-1"
+                        >
+                          {expandedLessonId === lesson.id ? '▲ Ocultar Temas' : '▼ Ver Temas de esta Clase'}
+                        </button>
+
+                        {expandedLessonId === lesson.id && (
+                          <div className="mt-3 p-3 bg-indigo-50 dark:bg-indigo-900/50 rounded-2xl border border-indigo-100 dark:border-indigo-800 space-y-2 animate-in fade-in">
+                            <p className="text-[9px] font-black uppercase text-indigo-400 tracking-wider">Temario de la lección:</p>
+                            {isFetchingInlineTopics ? (
+                              <p className="text-[10px] text-indigo-400 italic">Cargando temas...</p>
+                            ) : inlineTopics.length === 0 ? (
+                              <p className="text-[10px] text-indigo-400 italic">No hay temas desglosados registrados para esta lección.</p>
+                            ) : (
+                              <ul className="space-y-1.5">
+                                {inlineTopics.map((top, idx) => (
+                                  <li key={top.id || idx} className="text-[10px] font-bold text-indigo-900 dark:text-indigo-200 flex items-start gap-1.5">
+                                    <span className="text-indigo-500 font-black">•</span>
+                                    <span>{top.titulo}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 mb-4">
                         <div className="bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-2xl border border-indigo-100/50 flex flex-col justify-center">
                           <p className="text-[8px] font-black text-indigo-400 uppercase leading-none mb-1">Temas</p>
-                          <p className="text-[10px] font-black text-indigo-900 dark:text-white">
-                            {lesson.completedTopicsCount || 0} / 10
-                          </p>
+                          <p className="text-[10px] font-black text-indigo-900 dark:text-white">{lesson.completedTopicsCount || 0}/10</p>
                         </div>
                         <div className="bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-2xl border border-indigo-100/50 flex flex-col justify-center">
                           <p className="text-[8px] font-black text-indigo-400 uppercase leading-none mb-1">Créditos</p>
@@ -556,7 +760,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </div>
           </div>
         </div>
-      ) : (
+      ) : activeSubTab === 'banco' ? (
         <div className="space-y-6">
           <div className="bg-white dark:bg-indigo-900 p-8 rounded-[3rem] border-4 border-amber-100 flex items-center space-x-6">
             <div className="w-20 h-20 bg-amber-100 rounded-full flex items-center justify-center text-4xl">🏦</div>
@@ -615,6 +819,284 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        /* PESTAÑA: CATÁLOGO DE CURSOS DISPONIBLES (MODO SOLO LECTURA / EXPLORACIÓN) */
+        <div className="space-y-6">
+          <div className="bg-white dark:bg-indigo-900 p-8 rounded-[3rem] border-4 border-purple-100 dark:border-indigo-800 shadow-sm">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-6">
+              <div>
+                <h3 className="text-2xl font-black text-indigo-950 dark:text-white uppercase tracking-tight">
+                  Catálogo de Cursos Disponibles 📖
+                </h3>
+                <p className="text-xs font-bold text-indigo-400 dark:text-indigo-300 uppercase tracking-widest mt-1">
+                  Explora las materias y clases diseñadas para tu formación
+                </p>
+              </div>
+
+              <div className="w-full md:w-72">
+                <input 
+                  type="text" 
+                  value={catalogSearch} 
+                  onChange={(e) => setCatalogSearch(e.target.value)}
+                  placeholder="Buscar materia o curso..." 
+                  className="w-full px-5 py-3 rounded-2xl bg-indigo-50 dark:bg-indigo-950 border-2 border-indigo-100 dark:border-indigo-800 text-xs font-bold text-indigo-900 dark:text-white outline-none focus:border-purple-500 transition-colors placeholder:text-indigo-300"
+                />
+              </div>
+            </div>
+
+            {/* Aviso de Asignación por el Administrador */}
+            <div className="bg-purple-50 dark:bg-purple-950/40 border-2 border-purple-200 dark:border-purple-800 p-5 rounded-3xl flex items-start gap-3 mb-6">
+              <span className="text-2xl shrink-0">🔒</span>
+              <div className="text-xs">
+                <p className="font-black text-purple-900 dark:text-purple-200 uppercase tracking-wide mb-1">
+                  Cursos Asignados por la Administración
+                </p>
+                <p className="font-semibold text-purple-700 dark:text-purple-300 leading-relaxed">
+                  Los estudiantes pueden consultar aquí los contenidos y temarios de todas las materias. Las materias completas son programadas y asignadas exclusivamente por el profesor o la administración escolar. Si te interesa cursar una materia completa, solicítalo con tu administrador.
+                </p>
+              </div>
+            </div>
+
+            {/* Grid de Cursos */}
+            {filteredCatalogCourses.length === 0 ? (
+              <p className="text-center py-12 text-indigo-300 italic uppercase text-xs">
+                No se encontraron cursos disponibles con ese nombre.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {filteredCatalogCourses.map(course => {
+                  const isExpanded = expandedCourseId === String(course.id);
+                  const classes = courseClassesMap[String(course.id)] || [];
+                  const isLoadingClasses = !!loadingCourseClasses[String(course.id)];
+
+                  return (
+                    <div 
+                      key={course.id}
+                      className="bg-white dark:bg-indigo-950 p-6 rounded-[2.5rem] border-4 border-indigo-50 dark:border-indigo-800 shadow-sm flex flex-col justify-between transition-all"
+                    >
+                      <div>
+                        <div className="flex justify-between items-start mb-3">
+                          <span className="px-3 py-1 bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-300 text-[10px] font-black uppercase rounded-full">
+                            Materia Oficial
+                          </span>
+                          {!isAdminView && hasNoLessons && (
+                            <button
+                              onClick={() => {
+                                setSelectedDemoCourseId(String(course.id));
+                                setShowDemoModal(true);
+                              }}
+                              className="text-[10px] font-black uppercase text-indigo-600 dark:text-indigo-300 bg-indigo-50 dark:bg-indigo-900 px-3 py-1 rounded-full border border-indigo-200 hover:bg-indigo-100 transition-colors"
+                            >
+                              🎁 Elegir en Demo
+                            </button>
+                          )}
+                        </div>
+
+                        <h4 className="text-xl font-black text-indigo-900 dark:text-white uppercase leading-tight mb-2">
+                          {course.nombre}
+                        </h4>
+
+                        {course.descripcion && (
+                          <p className="text-xs text-indigo-600 dark:text-indigo-300 font-semibold mb-4">
+                            {course.descripcion}
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="pt-4 border-t-2 border-indigo-50 dark:border-indigo-900/60 mt-4">
+                        <button
+                          onClick={() => toggleExpandCourse(String(course.id))}
+                          className="w-full py-3 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-900 text-indigo-700 dark:text-indigo-200 rounded-2xl text-xs font-black uppercase tracking-wider transition-colors flex items-center justify-center gap-2"
+                        >
+                          <span>{isExpanded ? 'Ocultar Clases ▲' : 'Explorar Clases y Temas ▼'}</span>
+                        </button>
+
+                        {/* Desglose de Clases y Microtemas */}
+                        {isExpanded && (
+                          <div className="mt-4 pt-3 space-y-3 animate-in fade-in">
+                            {isLoadingClasses ? (
+                              <p className="text-center text-xs text-indigo-400 italic py-4">Cargando clases...</p>
+                            ) : classes.length === 0 ? (
+                              <p className="text-center text-xs text-indigo-400 italic py-4">Este curso aún no tiene clases dadas de alta.</p>
+                            ) : (
+                              <div className="space-y-3">
+                                <p className="text-[10px] font-black uppercase text-indigo-400 tracking-wider">
+                                  Clases del Curso ({classes.length}):
+                                </p>
+                                {classes.map((cls: any, index: number) => {
+                                  const isClassExpanded = !!expandedClassTopics[String(cls.id)];
+                                  const topics = expandedClassTopics[String(cls.id)] || [];
+                                  const isLoadingTopics = !!loadingClassTopics[String(cls.id)];
+
+                                  return (
+                                    <div 
+                                      key={cls.id || index}
+                                      className="p-4 bg-white dark:bg-indigo-900 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800"
+                                    >
+                                      <div className="flex justify-between items-start gap-2">
+                                        <div>
+                                          <p className="text-[9px] font-black text-purple-500 uppercase">Clase {index + 1}</p>
+                                          <h5 className="text-sm font-black text-indigo-900 dark:text-white uppercase leading-snug">
+                                            {cls.titulo}
+                                          </h5>
+                                          {cls.descripcion && (
+                                            <p className="text-[11px] text-indigo-600 dark:text-indigo-300 font-medium mt-1">
+                                              {cls.descripcion}
+                                            </p>
+                                          )}
+                                        </div>
+                                        <span className="text-[9px] font-black text-indigo-400 shrink-0 uppercase bg-indigo-50 dark:bg-indigo-950 px-2.5 py-1 rounded-xl">
+                                          ⏱️ {cls.assigned_time_minutes || 30} min
+                                        </span>
+                                      </div>
+
+                                      <div className="mt-3 pt-2 border-t border-indigo-50 dark:border-indigo-800/50 flex justify-between items-center">
+                                        <button
+                                          onClick={() => toggleExpandClassTopics(String(cls.id))}
+                                          className="text-[10px] font-black uppercase text-indigo-500 hover:text-indigo-700 dark:text-indigo-300"
+                                        >
+                                          {isClassExpanded ? '▲ Ocultar microtemas' : '▼ Ver microtemas'}
+                                        </button>
+                                        <span className="text-[9px] font-bold text-slate-400 uppercase">
+                                          🔒 Solo lectura
+                                        </span>
+                                      </div>
+
+                                      {isClassExpanded && (
+                                        <div className="mt-3 p-3 bg-indigo-50 dark:bg-indigo-950 rounded-xl space-y-1.5 animate-in fade-in">
+                                          {isLoadingTopics ? (
+                                            <p className="text-[10px] text-indigo-400 italic">Cargando microtemas...</p>
+                                          ) : topics.length === 0 ? (
+                                            <p className="text-[10px] text-indigo-400 italic">No hay microtemas detallados para esta clase.</p>
+                                          ) : (
+                                            <ul className="space-y-1">
+                                              {topics.map((t: any, tidx: number) => (
+                                                <li key={t.id || tidx} className="text-[10px] font-bold text-indigo-800 dark:text-indigo-200 flex items-start gap-1.5">
+                                                  <span className="text-purple-500 font-black">•</span>
+                                                  <span>{t.titulo}</span>
+                                                </li>
+                                              ))}
+                                            </ul>
+                                          )}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: SELECCIÓN DE MATERIA DEMO GRATIS (3 CLASES) */}
+      {showDemoModal && (
+        <div className="fixed inset-0 bg-indigo-950/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-indigo-900 w-full max-w-2xl rounded-[3rem] p-8 shadow-2xl border-8 border-indigo-50 dark:border-indigo-800 max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95">
+            <div className="text-center mb-6">
+              <span className="text-5xl mb-2 block">🎁</span>
+              <h3 className="text-2xl md:text-3xl font-black text-indigo-900 dark:text-white uppercase tracking-tight">
+                ¡Bienvenido a Buensoft Education!
+              </h3>
+              <p className="text-xs md:text-sm font-bold text-indigo-500 dark:text-indigo-300 uppercase tracking-wide mt-2">
+                Selecciona una materia para tu demostración gratis de 3 clases por una semana
+              </p>
+            </div>
+
+            {/* Tarjeta Explicativa de Fechas Alternadas */}
+            <div className="bg-amber-50 dark:bg-amber-950/40 border-2 border-amber-200 dark:border-amber-800 p-5 rounded-3xl mb-6">
+              <p className="text-[11px] font-black uppercase text-amber-800 dark:text-amber-300 tracking-wider mb-2">
+                📅 Calendario de tu Demo (Un día sí y un día no):
+              </p>
+              <p className="text-xs font-semibold text-amber-700 dark:text-amber-200 mb-3 leading-relaxed">
+                Tus 3 clases gratis se programarán durante la semana alternando días hábiles de estudio (saltando fines de semana):
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                {demoDates.map((dateStr, idx) => (
+                  <div key={idx} className="bg-white dark:bg-amber-900/50 p-3 rounded-2xl border border-amber-200 text-center">
+                    <p className="text-[9px] font-black text-amber-500 uppercase">Clase {idx + 1}</p>
+                    <p className="text-xs font-black text-amber-900 dark:text-white mt-0.5">
+                      {formatFriendlyDate(dateStr)}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Selector de Cursos Disponibles */}
+            <div className="space-y-4 mb-6">
+              <label className="block text-xs font-black text-indigo-600 dark:text-indigo-300 uppercase tracking-wider ml-1">
+                Selecciona la materia que deseas probar:
+              </label>
+
+              {coursesList.length === 0 ? (
+                <p className="text-xs text-indigo-400 italic text-center py-4">Cargando materias disponibles...</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-60 overflow-y-auto p-1">
+                  {coursesList.map(c => {
+                    const isSelected = selectedDemoCourseId === String(c.id);
+                    return (
+                      <div
+                        key={c.id}
+                        onClick={() => setSelectedDemoCourseId(String(c.id))}
+                        className={`p-4 rounded-2xl border-4 cursor-pointer transition-all ${
+                          isSelected
+                            ? 'border-indigo-600 bg-indigo-50 dark:bg-indigo-950/80 shadow-md scale-[1.02]'
+                            : 'border-indigo-50 dark:border-indigo-800 hover:border-indigo-200 bg-white dark:bg-indigo-900'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-sm font-black text-indigo-950 dark:text-white uppercase">
+                            {c.nombre}
+                          </h4>
+                          {isSelected && <span className="text-indigo-600 font-black text-base">✓</span>}
+                        </div>
+                        {c.descripcion && (
+                          <p className="text-[10px] text-indigo-500 dark:text-indigo-300 line-clamp-2 mt-1">
+                            {c.descripcion}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Acciones */}
+            <div className="flex flex-col sm:flex-row gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowDemoModal(false)}
+                className="py-3 px-6 rounded-2xl font-black text-xs uppercase text-indigo-400 hover:bg-indigo-50 transition-colors"
+                disabled={isAssigningDemo}
+              >
+                Decidir más tarde
+              </button>
+
+              <button
+                type="button"
+                onClick={handleAssignDemo}
+                disabled={!selectedDemoCourseId || isAssigningDemo}
+                className={`flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black text-sm uppercase tracking-widest shadow-xl transition-all ${
+                  !selectedDemoCourseId || isAssigningDemo
+                    ? 'opacity-50 cursor-not-allowed'
+                    : 'hover:bg-indigo-700 hover:scale-[1.02] active:scale-95'
+                }`}
+              >
+                {isAssigningDemo ? 'Asignando 3 clases...' : 'ACTIVAR MI DEMO GRATIS (3 CLASES) 🚀'}
+              </button>
             </div>
           </div>
         </div>
