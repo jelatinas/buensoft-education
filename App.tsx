@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { User, Role } from './types.ts';
-import { initStorage, autoUpdateLessonStatuses, updateUser, updateUserSession, getAccountBalance } from './storage2.ts';
+import { initStorage, autoUpdateLessonStatuses, updateUser, updateUserSession, getAccountBalance, ensureUserRecordExists } from './storage2.ts';
 import { supabase } from './supabaseClient.ts';
 import Login from './components/Login.tsx';
 import AdminDashboard from './components/AdminDashboard.tsx';
@@ -139,6 +139,18 @@ const App: React.FC = () => {
       }
 
       if (user) {
+        try {
+          const dbUser = await ensureUserRecordExists(user.username, user.email);
+          user = {
+            ...user,
+            id: dbUser.id || user.id,
+            username: dbUser.username || user.username,
+            role: dbUser.role || user.role
+          };
+          localStorage.setItem('current_user', JSON.stringify(user));
+        } catch (e) {
+          console.warn("Error sincronizando usuario:", e);
+        }
         setCurrentUser(user);
         if (user.role === Role.STUDENT) {
           await autoUpdateLessonStatuses(user.username);

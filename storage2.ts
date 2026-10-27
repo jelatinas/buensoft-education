@@ -30,9 +30,9 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
 
 export const autoUpdateLessonStatuses = async (username: string) => {
   try {
-    await supabase.from('student_lessons').update({ lesson_status: 'Aprobada', completed: true }).eq('student_username', username).gte('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
-    await supabase.from('student_lessons').update({ lesson_status: 'Reprobada', completed: false }).eq('student_username', username).gt('grade', 0).lt('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
-    await supabase.from('student_lessons').update({ lesson_status: 'En Progreso' }).eq('student_username', username).or('grade.is.null,grade.eq.0').gt('valid_interactions_count', 0).in('lesson_status', ['Pendiente']);
+    await supabase.from('student_lessons').update({ lesson_status: 'Aprobada', completed: true }).ilike('student_username', username).gte('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
+    await supabase.from('student_lessons').update({ lesson_status: 'Reprobada', completed: false }).ilike('student_username', username).gt('grade', 0).lt('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
+    await supabase.from('student_lessons').update({ lesson_status: 'En Progreso' }).ilike('student_username', username).or('grade.is.null,grade.eq.0').gt('valid_interactions_count', 0).in('lesson_status', ['Pendiente']);
   } catch (err) {
     console.error("Error en auto-actualización de estatus:", err);
   }
@@ -210,6 +210,54 @@ export const getUsers = async (): Promise<User[]> => {
   return error ? [] : (data || []);
 };
 
+/**
+ * Asegura que el usuario exista en la tabla 'users' (clave para Google SSO y registro).
+ * Si no existe, lo crea automáticamente para satisfacer las llaves foráneas.
+ * Retorna el registro del usuario con su nombre canónico e ID.
+ */
+export const ensureUserRecordExists = async (username: string, email?: string): Promise<User> => {
+  const cleanUsername = username.trim();
+  if (!cleanUsername) throw new Error("Nombre de usuario inválido.");
+
+  // 1. Buscar usuario (insensible a mayúsculas/minúsculas)
+  const { data: existing } = await supabase
+    .from('users')
+    .select('*')
+    .ilike('username', cleanUsername)
+    .maybeSingle();
+
+  if (existing) {
+    return existing;
+  }
+
+  // 2. Si no existe, insertarlo en la base de datos
+  const passwordHash = await hashPassword('123456');
+  const { data: created, error: insertError } = await supabase
+    .from('users')
+    .insert([{
+      username: cleanUsername,
+      password: passwordHash,
+      role: Role.STUDENT,
+      email: email || null,
+      balance: 0
+    }])
+    .select()
+    .single();
+
+  if (insertError) {
+    console.error("Error al asegurar registro de usuario:", insertError);
+    const { data: retry } = await supabase
+      .from('users')
+      .select('*')
+      .ilike('username', cleanUsername)
+      .maybeSingle();
+    if (retry) return retry;
+    throw insertError;
+  }
+
+  return created;
+};
+
 export const saveUser = async (user: User) => {
   const passwordHash = user.password && !isHashedPassword(user.password) 
     ? await hashPassword(user.password) 
@@ -296,7 +344,7 @@ export const getCachedQuestions = async (topic: string): Promise<any | null> => 
 };
 
 export const getStudentData = async (username: string): Promise<StudentData | null> => {
-  const { data, error } = await supabase.from('student_lessons').select('*').eq('student_username', username);
+  const { data, error } = await supabase.from('student_lessons').select('*').ilike('student_username', username);
   if (error) return null;
   const mappedLessons: Lesson[] = (data || []).map(row => {
     const rawLesson: Lesson = {
@@ -410,11 +458,15 @@ export const clearStudentLessonData = async (studentId: string, studentUsername:
 };
 
 export const addLessonToStudent = async (username: string, lesson: Lesson) => {
+  // Asegurar que el usuario existe en 'users' para cumplir la llave foránea
+  const dbUser = await ensureUserRecordExists(username);
+  const actualUsername = dbUser.username || username;
+
   const cleanTopic = lesson.title ? lesson.title.replace(/^[.\s]+/, '') : '';
   const cleanPrompt = lesson.learningPrompt ? lesson.learningPrompt.replace(/^[.\s]+/, '') : null;
 
-  await supabase.from('student_lessons').insert([{
-    student_username: username,
+  const { error } = await supabase.from('student_lessons').insert([{
+    student_username: actualUsername,
     subject: lesson.subject,
     topic: cleanTopic,
     duration_minutes: lesson.durationMinutes,
@@ -426,6 +478,11 @@ export const addLessonToStudent = async (username: string, lesson: Lesson) => {
     learning_prompt: cleanPrompt,
     lesson_status: 'Pendiente'
   }]);
+
+  if (error) {
+    console.error("Error al insertar en student_lessons:", error);
+    throw new Error("Error al guardar lección: " + error.message);
+  }
 };
 
 export const updateLessonInStudent = async (username: string, updatedLesson: Lesson) => {
@@ -1261,6 +1318,10 @@ export const registerStudent = async (username: string, password?: string, email
  * (un día sí y un día no).
  */
 export const assignDemoCourseToStudent = async (username: string, courseId: string | number) => {
+  // Asegurar existencia y canonical casing del usuario
+  const dbUser = await ensureUserRecordExists(username);
+  const actualUsername = dbUser.username || username;
+
   const [courses, classes] = await Promise.all([
     getCourses(),
     getClasses(courseId)
@@ -1281,7 +1342,7 @@ export const assignDemoCourseToStudent = async (username: string, courseId: stri
     const cls = demoClasses[i];
     const dateStr = dates[i] || dates[dates.length - 1];
 
-    await addLessonToStudent(username, {
+    await addLessonToStudent(actualUsername, {
       id: `demo-${Date.now()}-${i}`,
       subject: courseName,
       title: cls.titulo,

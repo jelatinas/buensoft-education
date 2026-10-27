@@ -185,6 +185,8 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
       // Si es un nuevo usuario sin clases asignadas, abrir automáticamente la pantalla de bienvenida y Demo
       if (!isAdminView && (!studentData?.student_lessons || studentData.student_lessons.length === 0)) {
         setShowDemoModal(true);
+      } else {
+        setShowDemoModal(false);
       }
     } catch (error) { console.error(error); } finally { setIsLoading(false); }
   };
@@ -309,10 +311,10 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
     setIsAssigningDemo(true);
     try {
       const res = await assignDemoCourseToStudent(user.username, selectedDemoCourseId);
-      alert(`🎉 ¡Felicidades! Se ha activado tu materia DEMO: "${res.courseName}".\nSe programaron tus 3 clases gratuitas para los días:\n${res.dates.map(d => formatFriendlyDate(d)).join('\n')}`);
       setShowDemoModal(false);
       await fetchData();
       setActiveSubTab('aula');
+      alert(`🎉 ¡Felicidades! Se ha activado tu materia DEMO: "${res.courseName}".\nSe programaron tus 3 clases gratuitas para los días:\n${res.dates.map(d => formatFriendlyDate(d)).join('\n')}`);
     } catch (err: any) {
       alert(err?.message || "Ocurrió un error al asignar tu materia demo.");
     } finally {
