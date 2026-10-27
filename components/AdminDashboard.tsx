@@ -26,7 +26,7 @@ import { getSchoolDayStatus } from '../utils/schoolCalendar';
 import StudentDashboard from './StudentDashboard';
 import AuditModal from './AuditModal';
 import CourseManager from './CourseManager';
-import { Eye, EyeOff } from 'lucide-react';
+import { Eye, EyeOff, ListChecks, CheckSquare, X, Search } from 'lucide-react';
 
 interface AdminDashboardProps {
   user: User;
@@ -100,6 +100,11 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
   const [courses, setCourses] = useState<any[]>([]);
   const [dynCourseId, setDynCourseId] = useState<string>('');
   const [dynExcludeHolidays, setDynExcludeHolidays] = useState<boolean>(true);
+  const [availableClasses, setAvailableClasses] = useState<any[]>([]);
+  const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
+  const [showClassModal, setShowClassModal] = useState<boolean>(false);
+  const [classSearchTerm, setClassSearchTerm] = useState<string>('');
+  const [isLoadingClasses, setIsLoadingClasses] = useState<boolean>(false);
 
   const [remStudent, setRemStudent] = useState('');
   const [remSubject, setRemSubject] = useState('');
@@ -303,26 +308,47 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
     }
   };
 
+  const handleCourseChange = async (courseId: string) => {
+    setDynCourseId(courseId);
+    if (!courseId) {
+      setAvailableClasses([]);
+      setSelectedClassIds([]);
+      return;
+    }
+    setIsLoadingClasses(true);
+    try {
+      const classes = await getClasses(courseId);
+      setAvailableClasses(classes || []);
+      // Por defecto todas seleccionadas para conveniencia
+      setSelectedClassIds((classes || []).map((c: any) => String(c.id)));
+    } catch (err) {
+      console.error('Error al cargar clases del curso:', err);
+      alert('No se pudieron cargar las clases del curso.');
+    } finally {
+      setIsLoadingClasses(false);
+    }
+  };
+
   const handleDynamicAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!dynStudent || !dynCourseId) return;
     
+    // Filtrar las clases que el administrador seleccionó
+    const classesToAssign = availableClasses.filter(c => selectedClassIds.includes(String(c.id)));
+    if (!classesToAssign || classesToAssign.length === 0) {
+      alert('Debes seleccionar al menos una clase del curso para asignar al estudiante.');
+      return;
+    }
+
     setIsLoading(true);
     try {
-      const courseClasses = await getClasses(dynCourseId);
-      if (!courseClasses || courseClasses.length === 0) {
-        alert('Este curso no tiene clases creadas.');
-        setIsLoading(false);
-        return;
-      }
-      
       const courseObj = courses.find(c => String(c.id) === String(dynCourseId));
       const courseName = courseObj ? courseObj.nombre : 'Curso Asignado';
 
       let currentDate = new Date(dynStartDate + 'T12:00:00');
       let assignedCount = 0;
       
-      while (assignedCount < courseClasses.length) {
+      while (assignedCount < classesToAssign.length) {
         const dateStr = currentDate.toISOString().split('T')[0];
         const dayOfWeek = (currentDate.getDay() + 6) % 7;
         
@@ -331,7 +357,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
         const isValidDay = isDaySelected && (!dynExcludeHolidays || dayStatus.isSchoolDay);
 
         if (isValidDay) {
-          const currentClass = courseClasses[assignedCount];
+          const currentClass = classesToAssign[assignedCount];
           await addLessonToStudent(dynStudent, {
             id: 'temp-' + Date.now() + '-' + assignedCount,
             subject: courseName,
@@ -346,7 +372,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
         currentDate.setDate(currentDate.getDate() + 1);
         if (currentDate.getFullYear() > 2028) break;
       }
-      alert(`¡Se asignaron ${assignedCount} lecciones con éxito!`);
+      alert(`¡Se asignaron ${assignedCount} lecciones de "${courseName}" a ${dynStudent.toUpperCase()} con éxito!`);
       if (selectedStudent === dynStudent) refreshStudentLessons();
     } catch (err) { alert("Error en asignación masiva."); } finally { setIsLoading(false); }
   };
@@ -507,12 +533,43 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
               </div>
               <div className="flex flex-col space-y-1">
                 <label className="text-[10px] font-black text-indigo-400 uppercase ml-2">Curso a Asignar</label>
-                <select value={dynCourseId} onChange={e => setDynCourseId(e.target.value)} className="w-full p-4 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-500 outline-none" required>
+                <select value={dynCourseId} onChange={e => handleCourseChange(e.target.value)} className="w-full p-4 bg-indigo-50 dark:bg-indigo-950 rounded-2xl font-bold border-2 border-transparent focus:border-indigo-500 outline-none" required>
                   <option value="">Seleccionar Curso...</option>
                   {courses.map(c => <option key={c.id} value={c.id}>{c.nombre.toUpperCase()}</option>)}
                 </select>
               </div>
             </div>
+
+            {dynCourseId && (
+              <div className="bg-gradient-to-r from-indigo-50/90 to-blue-50/80 dark:from-indigo-950/60 dark:to-blue-950/50 p-5 rounded-2xl border-2 border-indigo-200 dark:border-indigo-800 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 shadow-sm animate-in fade-in duration-300">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-black uppercase text-indigo-500 tracking-wider">Clases del Curso:</span>
+                    <span className="font-extrabold text-sm text-indigo-950 dark:text-white bg-indigo-100 dark:bg-indigo-800 px-3 py-0.5 rounded-full">
+                      {isLoadingClasses ? 'Cargando clases...' : `${selectedClassIds.length} de ${availableClasses.length} seleccionadas`}
+                    </span>
+                  </div>
+                  <p className="text-xs text-indigo-600 dark:text-indigo-300 font-medium">
+                    {isLoadingClasses
+                      ? 'Obteniendo las clases del curso...'
+                      : selectedClassIds.length === availableClasses.length
+                      ? '✨ Se asignará el curso completo con todas sus clases.'
+                      : selectedClassIds.length === 0
+                      ? '⚠️ No has seleccionado ninguna clase. Haz clic en "Seleccionar Clases".'
+                      : `🎯 Se programarán únicamente las ${selectedClassIds.length} clases elegidas.`}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  disabled={isLoadingClasses || availableClasses.length === 0}
+                  onClick={() => setShowClassModal(true)}
+                  className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-black text-xs rounded-xl shadow-md transition-all flex items-center gap-2 disabled:opacity-50 uppercase tracking-wider shrink-0"
+                >
+                  <ListChecks size={18} />
+                  <span>Seleccionar Clases ({selectedClassIds.length}/{availableClasses.length})</span>
+                </button>
+              </div>
+            )}
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               <div className="flex flex-col space-y-1">
@@ -563,6 +620,128 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
               {isLoading ? 'Asignando...' : 'Iniciar Asignación Masiva 🚀'}
             </button>
           </form>
+
+          {/* MODAL DE SELECCIÓN DE CLASES DEL CURSO */}
+          {showClassModal && (
+            <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white dark:bg-indigo-950 w-full max-w-2xl rounded-[2.5rem] shadow-2xl border-4 border-indigo-100 dark:border-indigo-800 overflow-hidden flex flex-col max-h-[85vh] animate-in zoom-in-95 duration-200">
+                
+                {/* Header */}
+                <div className="p-6 border-b border-indigo-100 dark:border-indigo-800/80 flex items-center justify-between bg-indigo-50/50 dark:bg-indigo-900/40">
+                  <div>
+                    <span className="text-[10px] font-black uppercase text-indigo-500 tracking-wider">
+                      {courses.find(c => String(c.id) === String(dynCourseId))?.nombre || 'Curso'}
+                    </span>
+                    <h3 className="text-xl font-black text-indigo-900 dark:text-white">
+                      Seleccionar Clases para Asignar
+                    </h3>
+                  </div>
+                  <button 
+                    type="button" 
+                    onClick={() => setShowClassModal(false)}
+                    className="w-10 h-10 rounded-full bg-indigo-100 dark:bg-indigo-800 hover:bg-indigo-200 text-indigo-600 dark:text-indigo-200 flex items-center justify-center transition-all cursor-pointer"
+                  >
+                    <X size={20} />
+                  </button>
+                </div>
+
+                {/* Barra de Búsqueda y Botones Rápidos */}
+                <div className="p-4 border-b border-indigo-50 dark:border-indigo-800/50 flex flex-col sm:flex-row gap-3 items-center justify-between bg-white dark:bg-indigo-950">
+                  <div className="relative w-full sm:w-64">
+                    <Search size={16} className="absolute left-3.5 top-1/2 -translate-y-1/2 text-indigo-400" />
+                    <input 
+                      type="text" 
+                      value={classSearchTerm}
+                      onChange={(e) => setClassSearchTerm(e.target.value)}
+                      placeholder="Buscar clase por título..."
+                      className="w-full pl-9 pr-3 py-2 bg-indigo-50 dark:bg-indigo-900/50 rounded-xl text-xs font-bold border-2 border-transparent focus:border-indigo-500 outline-none text-indigo-900 dark:text-white"
+                    />
+                  </div>
+                  <div className="flex gap-2 w-full sm:w-auto justify-end">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedClassIds(availableClasses.map(c => String(c.id)))}
+                      className="px-3.5 py-2 bg-indigo-100 dark:bg-indigo-800 hover:bg-indigo-200 text-indigo-700 dark:text-indigo-200 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                    >
+                      Seleccionar Todas ({availableClasses.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedClassIds([])}
+                      className="px-3.5 py-2 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 text-red-600 dark:text-red-300 text-xs font-bold rounded-xl transition-all cursor-pointer"
+                    >
+                      Deseleccionar Todas
+                    </button>
+                  </div>
+                </div>
+
+                {/* Lista de Clases con Checkboxes */}
+                <div className="p-6 overflow-y-auto space-y-2.5 flex-1 custom-scrollbar">
+                  {availableClasses.length === 0 ? (
+                    <p className="text-center text-sm text-indigo-400 py-8">Este curso aún no tiene clases creadas.</p>
+                  ) : (
+                    availableClasses
+                      .filter(c => !classSearchTerm || c.titulo.toLowerCase().includes(classSearchTerm.toLowerCase()))
+                      .map((cls, idx) => {
+                        const isSelected = selectedClassIds.includes(String(cls.id));
+                        return (
+                          <div
+                            key={cls.id}
+                            onClick={() => {
+                              setSelectedClassIds(prev => 
+                                isSelected 
+                                  ? prev.filter(id => id !== String(cls.id))
+                                  : [...prev, String(cls.id)]
+                              );
+                            }}
+                            className={`p-4 rounded-2xl border-2 transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                              isSelected 
+                                ? 'bg-indigo-50/90 dark:bg-indigo-900/60 border-indigo-500 shadow-sm' 
+                                : 'bg-white dark:bg-indigo-950/40 border-gray-100 dark:border-indigo-800/40 hover:border-indigo-200 opacity-60'
+                            }`}
+                          >
+                            <div className="flex items-center gap-3.5">
+                              <div className={`w-7 h-7 rounded-xl flex items-center justify-center transition-all ${
+                                isSelected ? 'bg-indigo-600 text-white shadow-md' : 'border-2 border-gray-300 dark:border-indigo-700 bg-gray-50 dark:bg-indigo-900'
+                              }`}>
+                                {isSelected && <CheckSquare size={18} />}
+                              </div>
+                              <div>
+                                <span className="text-[10px] font-black uppercase text-indigo-400 mr-2">Clase {idx + 1}</span>
+                                <h4 className="font-extrabold text-sm text-indigo-900 dark:text-white inline">{cls.titulo}</h4>
+                                {cls.descripcion && (
+                                  <p className="text-xs text-indigo-400 line-clamp-1 mt-0.5">{cls.descripcion}</p>
+                                )}
+                              </div>
+                            </div>
+                            {cls.assigned_time_minutes && (
+                              <span className="text-[11px] font-bold text-indigo-500 dark:text-indigo-300 bg-white dark:bg-indigo-900 px-3 py-1 rounded-full whitespace-nowrap shadow-xs">
+                                ⏱️ {cls.assigned_time_minutes} min
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })
+                  )}
+                </div>
+
+                {/* Footer del Modal */}
+                <div className="p-5 border-t border-indigo-100 dark:border-indigo-800 bg-indigo-50/40 dark:bg-indigo-950/40 flex items-center justify-between">
+                  <span className="text-xs font-bold text-indigo-600 dark:text-indigo-300 ml-2">
+                    🎯 <strong>{selectedClassIds.length}</strong> de <strong>{availableClasses.length}</strong> clases seleccionadas
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowClassModal(false)}
+                    className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-black text-xs rounded-xl shadow-lg transition-all uppercase tracking-wider cursor-pointer"
+                  >
+                    Confirmar Selección
+                  </button>
+                </div>
+
+              </div>
+            </div>
+          )}
         </section>
       )}
 
