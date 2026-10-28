@@ -1302,30 +1302,118 @@ export const getDemoLessonDates = (startDateStr?: string): string[] => {
 /**
  * Registra un nuevo estudiante en la base de datos
  */
+/**
+ * Inicia sesión o registra un estudiante automáticamente con Google SSO
+ */
+export const loginOrRegisterWithGoogle = async (googleEmail: string, name?: string, sub?: string): Promise<User> => {
+  const cleanEmail = googleEmail.trim().toLowerCase();
+  
+  // 1. Buscar si algún usuario ya tiene este correo
+  const { data: userByEmail } = await supabase
+    .from('users')
+    .select('*')
+    .ilike('email', cleanEmail)
+    .maybeSingle();
+
+  if (userByEmail) {
+    return userByEmail;
+  }
+
+  // 2. Si no, buscar por username derivado del email
+  const baseUsername = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
+  const { data: userByName } = await supabase
+    .from('users')
+    .select('*')
+    .ilike('username', baseUsername)
+    .maybeSingle();
+
+  if (userByName) {
+    await supabase.from('users').update({ email: cleanEmail }).eq('id', userByName.id);
+    return { ...userByName, email: cleanEmail };
+  }
+
+  // 3. Crear nuevo usuario en Supabase con este correo y username
+  const passwordHash = await hashPassword('123456');
+  const { data: created, error } = await supabase
+    .from('users')
+    .insert([{
+      username: baseUsername,
+      password: passwordHash,
+      role: Role.STUDENT,
+      email: cleanEmail,
+      balance: 0
+    }])
+    .select()
+    .single();
+
+  if (error || !created) {
+    console.error("Error al registrar usuario con Google:", error);
+    const fallbackUsername = `${baseUsername}_${Math.floor(100 + Math.random() * 900)}`;
+    const { data: createdFallback, error: err2 } = await supabase
+      .from('users')
+      .insert([{
+        username: fallbackUsername,
+        password: passwordHash,
+        role: Role.STUDENT,
+        email: cleanEmail,
+        balance: 0
+      }])
+      .select()
+      .single();
+    if (err2 || !createdFallback) throw error || err2;
+    return createdFallback;
+  }
+
+  return created;
+};
+
 export const registerStudent = async (username: string, password?: string, email?: string): Promise<User> => {
   const cleanUsername = username.trim().toLowerCase();
+  const cleanEmail = email ? email.trim().toLowerCase() : undefined;
   if (!cleanUsername) throw new Error('El nombre de usuario es requerido.');
   if (cleanUsername.length < 3) throw new Error('El nombre de usuario debe tener al menos 3 caracteres.');
 
-  // Verificar si ya existe
+  // Verificar si ya existe el usuario
   const { data: existing } = await supabase
     .from('users')
     .select('username')
-    .eq('username', cleanUsername)
+    .ilike('username', cleanUsername)
     .maybeSingle();
 
   if (existing) {
     throw new Error('Ese nombre de usuario ya está registrado. Por favor elige otro.');
   }
 
-  const newUser: User = {
-    username: cleanUsername,
-    password: password || '123456',
-    email: email ? email.trim() : undefined,
-    role: Role.STUDENT
-  };
+  // Verificar si el correo ya está registrado
+  if (cleanEmail) {
+    const { data: existingEmail } = await supabase
+      .from('users')
+      .select('username')
+      .ilike('email', cleanEmail)
+      .maybeSingle();
+    if (existingEmail) {
+      throw new Error('Ese correo electrónico ya está asociado a otra cuenta.');
+    }
+  }
 
-  await saveUser(newUser);
+  const passwordHash = await hashPassword(password || '123456');
+  const { data: newUser, error } = await supabase
+    .from('users')
+    .insert([{
+      username: cleanUsername,
+      password: passwordHash,
+      email: cleanEmail || null,
+      role: Role.STUDENT,
+      balance: 0
+    }])
+    .select()
+    .single();
+
+  if (error || !newUser) {
+    console.error("Error al registrar estudiante:", error);
+    throw error || new Error("No se pudo registrar el estudiante.");
+  }
+
   return newUser;
 };
 
