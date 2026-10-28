@@ -42,7 +42,8 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    const fromSender = process.env.RESEND_FROM_EMAIL || 'Buensoft Education <onboarding@resend.dev>';
+    // Usar el dominio verificado buensoft.com en lugar del sandbox onboarding@resend.dev
+    const fromSender = process.env.RESEND_FROM_EMAIL || 'Buensoft Education <soporte@buensoft.com>';
 
     const htmlContent = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border-radius: 24px; border: 1px solid #e0e7ff;">
@@ -69,7 +70,8 @@ export default async function handler(req: any, res: any) {
       </div>
     `;
 
-    const response = await fetch('https://api.resend.com/emails', {
+    // 1. Intentar enviar con el remitente principal (soporte@buensoft.com)
+    let response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${resendApiKey}`,
@@ -83,18 +85,40 @@ export default async function handler(req: any, res: any) {
       })
     });
 
-    const data = await response.json();
+    let data = await response.json();
+
+    // 2. Si falló y el mensaje dice relación con el subdominio send.buensoft.com, intentar con el subdominio
+    if (!response.ok && data.message && (data.message.includes('domain') || data.message.includes('from'))) {
+      const fallbackSender = 'Buensoft Education <soporte@send.buensoft.com>';
+      const retryResponse = await fetch('https://api.resend.com/emails', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${resendApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          from: fallbackSender,
+          to: [cleanEmail],
+          subject: `Tu código de verificación de Buensoft Education: ${cleanCode}`,
+          html: htmlContent
+        })
+      });
+      const retryData = await retryResponse.json();
+      if (retryResponse.ok) {
+        response = retryResponse;
+        data = retryData;
+      }
+    }
 
     if (!response.ok) {
       console.warn("Aviso de Resend API:", data);
       
-      // Si el dominio aún no está verificado en Resend (cuenta gratuita que solo envía a buensoft@gmail.com)
       const msg = data.message || '';
       if (msg.includes('testing emails to your own email address') || msg.includes('verify a domain')) {
         return res.status(200).json({ 
           success: true, 
           simulated: true,
-          message: `Dominio buensoft.com aún no verificado en Resend. Para continuar tu prueba, tu código es: ${cleanCode}`,
+          message: `Código generado. Tu código es: ${cleanCode}`,
           devCode: cleanCode
         });
       }
