@@ -364,11 +364,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   const onHandleLessonClick = async (lesson: Lesson) => {
     if (isAdminView) {
-      if (auditStatuses[lesson.id]?.hasGeminiLesson) {
-        setAuditLesson(lesson);
-      } else {
-        alert("El estudiante aún no genera contenido para esta lección.");
-      }
+      setAuditLesson(lesson);
       return;
     }
     setPendingLesson(lesson);
@@ -376,7 +372,9 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   };
 
   const getLessonUIConfig = (status: string, creditsTransfered: boolean, lessonId: string) => {
-    const canAudit = isAdminView ? !!auditStatuses[lessonId]?.hasGeminiLesson : false;
+    const hasAuditData = !!auditStatuses[lessonId]?.hasGeminiLesson || !!auditStatuses[lessonId]?.hasExamAttempts;
+    const isCompletedOrActive = status === 'Aprobada' || status === 'Completada' || status === 'Reprobada' || status === 'En Progreso';
+    const canAudit = isAdminView ? (hasAuditData || isCompletedOrActive) : false;
     let config = {
       color: 'bg-indigo-600',
       label: 'PENDIENTE',
