@@ -29,7 +29,7 @@ export default async function handler(req: any, res: any) {
     return res.status(400).json({ error: 'El formato de correo electrónico no es válido.' });
   }
 
-  const resendApiKey = process.env.RESEND_API_KEY;
+  const resendApiKey = process.env.RESEND_API_KEY || process.env.resend_api_key;
 
   if (!resendApiKey) {
     console.warn("⚠️ RESEND_API_KEY no está configurada en las variables de entorno.");
@@ -42,8 +42,11 @@ export default async function handler(req: any, res: any) {
   }
 
   try {
-    // Usar el dominio verificado buensoft.com en lugar del sandbox onboarding@resend.dev
-    const fromSender = process.env.RESEND_FROM_EMAIL || 'Buensoft Education <soporte@buensoft.com>';
+    // Usar la variable configurada en Vercel o por defecto 'Buensoft Education <education@buensoft.com>'
+    let fromSender = process.env.RESEND_FROM_EMAIL || process.env.resend_from_email || 'Buensoft Education <education@buensoft.com>';
+    if (!fromSender.includes('<') && fromSender.includes('@')) {
+      fromSender = `Buensoft Education <${fromSender.trim()}>`;
+    }
 
     const htmlContent = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border-radius: 24px; border: 1px solid #e0e7ff;">
@@ -70,7 +73,7 @@ export default async function handler(req: any, res: any) {
       </div>
     `;
 
-    // 1. Intentar enviar con el remitente principal (soporte@buensoft.com)
+    // 1. Enviar con el remitente especificado
     let response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -87,9 +90,9 @@ export default async function handler(req: any, res: any) {
 
     let data = await response.json();
 
-    // 2. Si falló y el mensaje dice relación con el subdominio send.buensoft.com, intentar con el subdominio
+    // 2. Si falla por configuración de subdominio en Resend, intentar como respaldo con send.buensoft.com
     if (!response.ok && data.message && (data.message.includes('domain') || data.message.includes('from'))) {
-      const fallbackSender = 'Buensoft Education <soporte@send.buensoft.com>';
+      const fallbackSender = 'Buensoft Education <education@send.buensoft.com>';
       const retryResponse = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
