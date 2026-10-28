@@ -33,11 +33,10 @@ export default async function handler(req: any, res: any) {
 
   if (!resendApiKey) {
     console.warn("⚠️ RESEND_API_KEY no está configurada en las variables de entorno.");
-    // Si no está configurada la llave en Vercel, respondemos con aviso para desarrollo/prueba
     return res.status(200).json({ 
       success: true, 
       simulated: true,
-      message: `Modo de prueba: RESEND_API_KEY no detectada en Vercel. Tu código es: ${cleanCode}`,
+      message: `Modo de prueba: RESEND_API_KEY no detectada. Tu código es: ${cleanCode}`,
       devCode: cleanCode
     });
   }
@@ -87,7 +86,19 @@ export default async function handler(req: any, res: any) {
     const data = await response.json();
 
     if (!response.ok) {
-      console.error("Error devuelto por Resend API:", data);
+      console.warn("Aviso de Resend API:", data);
+      
+      // Si el dominio aún no está verificado en Resend (cuenta gratuita que solo envía a buensoft@gmail.com)
+      const msg = data.message || '';
+      if (msg.includes('testing emails to your own email address') || msg.includes('verify a domain')) {
+        return res.status(200).json({ 
+          success: true, 
+          simulated: true,
+          message: `Dominio buensoft.com aún no verificado en Resend. Para continuar tu prueba, tu código es: ${cleanCode}`,
+          devCode: cleanCode
+        });
+      }
+
       return res.status(response.status).json({ 
         error: data.message || 'Error al enviar correo con Resend.' 
       });
