@@ -16,26 +16,31 @@ interface LoginProps {
 const GOOGLE_CLIENT_ID = "824392318898-gufjs4r3bcm3obb2nvieg99sgcn83kti.apps.googleusercontent.com";
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
-  // Modos principales: Iniciar Sesión, Registro, o Recuperación de contraseña/usuario
-  const [isRegistering, setIsRegistering] = useState(false);
+  // Modos de visualización: 'login' | 'register' | 'forgot'
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
+  
+  // Pasos para registro y recuperación
   const [registerStep, setRegisterStep] = useState<'form' | 'verify_pin'>('form');
-
-  // Modo de Recuperación ("Olvidé mi usuario o contraseña")
-  const [isForgotPassword, setIsForgotPassword] = useState(false);
   const [forgotStep, setForgotStep] = useState<'email' | 'code'>('email');
+
+  // Campos de formulario Login
+  const [loginIdentifier, setLoginIdentifier] = useState(''); // Puede ser usuario o correo
+  const [loginPassword, setLoginPassword] = useState('');
+
+  // Campos de formulario Registro
+  const [regUsername, setRegUsername] = useState('');
+  const [regEmail, setRegEmail] = useState('');
+  const [regPassword, setRegPassword] = useState('');
+  const [regConfirmPassword, setRegConfirmPassword] = useState('');
+
+  // Campos de Recuperación
   const [forgotEmail, setForgotEmail] = useState('');
   const [forgotUsername, setForgotUsername] = useState('');
   const [forgotCode, setForgotCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmNewPassword, setConfirmNewPassword] = useState('');
 
-  // Campos de formulario Login / Registro
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
-  const [email, setEmail] = useState('');
-
-  // Verificación PIN Resend (Compartido para registro y recuperación)
+  // Verificación PIN Resend
   const [pinCode, setPinCode] = useState('');
   const [sentPin, setSentPin] = useState<string | null>(null);
   const [pinExpiresAt, setPinExpiresAt] = useState<number | null>(null);
@@ -48,29 +53,23 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
   const googleBtnRef = useRef<HTMLDivElement>(null);
 
-  const resetAllFeedback = () => {
+  const clearMessages = () => {
     setError('');
     setInfoMessage('');
-    setSentPin(null);
-    setPinCode('');
-    setForgotCode('');
-    setNewPassword('');
-    setConfirmNewPassword('');
   };
 
-  // Inicializar Google Sign-In con Google Identity Services
+  // Inicializar Google Sign-In
   useEffect(() => {
-    if (isForgotPassword) return;
+    if (authMode === 'forgot' || registerStep === 'verify_pin') return;
 
     const handleGoogleResponse = async (response: any) => {
       setIsLoading(true);
-      setError('');
+      clearMessages();
       try {
         if (!response.credential) {
           throw new Error("No se recibió credencial de Google.");
         }
 
-        // Decodificar JWT de Google
         const base64Url = response.credential.split('.')[1];
         const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
         const jsonPayload = decodeURIComponent(atob(base64).split('').map((c) => {
@@ -86,7 +85,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
         const authenticatedUser = await loginOrRegisterWithGoogle(googleEmail, payload.name, payload.sub);
 
-        // Guardar sesión compartida en cookie .buensoft.com para unificar el ecosistema
+        // Guardar sesión SSO en cookie .buensoft.com
         const ssoData = {
           email: googleEmail,
           name: payload.name || authenticatedUser.username,
@@ -119,10 +118,10 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
           (window as any).google.accounts.id.renderButton(
             googleBtnRef.current,
             { 
-              theme: 'filled_blue', 
+              theme: 'outline', 
               size: 'large', 
-              shape: 'pill',
-              text: isRegistering ? 'signup_with' : 'signin_with',
+              shape: 'rectangular',
+              text: authMode === 'register' ? 'signup_with' : 'signin_with',
               width: 320,
               logo_alignment: 'left'
             }
@@ -133,7 +132,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
     const timer = setTimeout(initGoogle, 200);
     return () => clearTimeout(timer);
-  }, [isRegistering, isForgotPassword, onLogin]);
+  }, [authMode, registerStep, onLogin]);
 
   // Temporizador de reenvío de código Resend
   useEffect(() => {
@@ -144,27 +143,51 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     return () => clearInterval(interval);
   }, [resendCooldown]);
 
-  // Enviar PIN de verificación con Resend para Registro
-  const handleSendPin = async (e: React.FormEvent) => {
+  // -------------------------------------------------------------------------
+  // INICIO DE SESIÓN CON CORREO O USUARIO
+  // -------------------------------------------------------------------------
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    resetAllFeedback();
+    clearMessages();
+    setIsLoading(true);
 
-    if (username.trim().length < 3) {
+    try {
+      const authenticatedUser = await authenticateUser(loginIdentifier, loginPassword);
+      if (authenticatedUser) {
+        onLogin(authenticatedUser);
+      } else {
+        setError('El correo/usuario o la contraseña son incorrectos.');
+      }
+    } catch (err: any) {
+      setError(err?.message || 'Error al conectar con la base de datos.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  // -------------------------------------------------------------------------
+  // REGISTRO: ENVÍO DE CÓDIGO RESEND
+  // -------------------------------------------------------------------------
+  const handleSendRegisterPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    clearMessages();
+
+    if (regUsername.trim().length < 3) {
       setError('El nombre de usuario debe tener al menos 3 caracteres.');
       return;
     }
 
-    if (!email.trim() || !email.includes('@') || !email.includes('.')) {
-      setError('Ingresa un correo electrónico válido para confirmar tu cuenta.');
+    if (!regEmail.trim() || !regEmail.includes('@') || !regEmail.includes('.')) {
+      setError('Ingresa un correo electrónico válido.');
       return;
     }
 
-    if (password.length < 4) {
+    if (regPassword.length < 4) {
       setError('La contraseña debe tener al menos 4 caracteres.');
       return;
     }
 
-    if (password !== confirmPassword) {
+    if (regPassword !== regConfirmPassword) {
       setError('Las contraseñas no coinciden.');
       return;
     }
@@ -177,78 +200,41 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: email.trim().toLowerCase(),
-          username: username.trim(),
+          email: regEmail.trim().toLowerCase(),
+          username: regUsername.trim(),
           code: generated,
           type: 'verification'
         })
       });
 
       const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Error al enviar código de verificación.');
-      }
+      if (!response.ok) throw new Error(data.error || 'Error al enviar código de verificación.');
 
       setSentPin(generated);
-      setPinExpiresAt(Date.now() + 15 * 60 * 1000); // 15 minutos
+      setPinExpiresAt(Date.now() + 15 * 60 * 1000);
       setResendCooldown(60);
       setRegisterStep('verify_pin');
 
       if (data.simulated && data.devCode) {
         setPinCode(data.devCode);
-        setInfoMessage(`🔔 Modo pruebas: Tu código es ${data.devCode}`);
+        setInfoMessage(`🔔 Código para pruebas: ${data.devCode}`);
       } else {
-        setInfoMessage(`✅ Código enviado a ${email.trim()}. Revisa tu buzón de entrada o spam.`);
+        setInfoMessage(`✅ Código enviado a ${regEmail.trim()}. Revisa tu buzón.`);
       }
     } catch (err: any) {
-      console.error(err);
       setError(err?.message || 'Error al conectar con el servidor de correo.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Reenviar código PIN de Registro
-  const handleResendPin = async () => {
-    if (resendCooldown > 0 || !email.trim()) return;
-    setIsLoading(true);
-    setError('');
-    const generated = Math.floor(100000 + Math.random() * 900000).toString();
-
-    try {
-      const response = await fetch('/api/send-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: email.trim().toLowerCase(),
-          username: username.trim(),
-          code: generated,
-          type: 'verification'
-        })
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Error al reenviar código.');
-
-      setSentPin(generated);
-      setPinExpiresAt(Date.now() + 15 * 60 * 1000);
-      setResendCooldown(60);
-      setInfoMessage(`✅ Nuevo código enviado a ${email.trim()}.`);
-    } catch (err: any) {
-      setError(err?.message || 'Error al reenviar el código.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Verificar PIN y registrar estudiante en Supabase
-  const handleConfirmPinAndRegister = async (e: React.FormEvent) => {
+  // REGISTRO: CONFIRMAR CÓDIGO
+  const handleConfirmRegisterPin = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    setInfoMessage('');
+    clearMessages();
 
     if (!sentPin) {
-      setError('Primero debes solicitar un código de verificación.');
+      setError('Primero solicita un código de verificación.');
       return;
     }
 
@@ -258,13 +244,13 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     }
 
     if (pinCode.trim() !== sentPin) {
-      setError('El código de 6 dígitos es incorrecto.');
+      setError('El código ingresado es incorrecto.');
       return;
     }
 
     setIsLoading(true);
     try {
-      const registeredUser = await registerStudent(username, password, email);
+      const registeredUser = await registerStudent(regUsername, regPassword, regEmail);
       if (registeredUser) {
         onLogin(registeredUser);
       }
@@ -275,36 +261,30 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
     }
   };
 
-  // -------------------------------------------------------------
-  // RECUPERACIÓN DE USUARIO Y CONTRASEÑA
-  // -------------------------------------------------------------
-
-  // Paso 1: Buscar cuenta por correo y enviar código provisional
+  // -------------------------------------------------------------------------
+  // RECUPERACIÓN: BUSCAR USUARIO Y ENVIAR CÓDIGO
+  // -------------------------------------------------------------------------
   const handleSendRecoveryCode = async (e: React.FormEvent) => {
     e.preventDefault();
-    resetAllFeedback();
+    clearMessages();
 
     const cleanEmail = forgotEmail.trim().toLowerCase();
     if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
-      setError('Por favor ingresa un correo electrónico válido.');
+      setError('Ingresa un correo electrónico válido.');
       return;
     }
 
     setIsLoading(true);
     try {
-      // 1. Verificar si existe un usuario con este correo
       const foundUser = await findUserByEmail(cleanEmail);
       if (!foundUser) {
-        setError('No encontramos ninguna cuenta registrada con este correo electrónico.');
+        setError('No encontramos ninguna cuenta registrada con este correo.');
         return;
       }
 
       setForgotUsername(foundUser.username);
-
-      // 2. Generar código provisional de 6 dígitos
       const generated = Math.floor(100000 + Math.random() * 900000).toString();
 
-      // 3. Enviar código por Resend con plantilla de recuperación
       const response = await fetch('/api/send-code', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -317,9 +297,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       });
 
       const data = await response.json();
-      if (!response.ok) {
-        throw new Error(data.error || 'Error al enviar código de recuperación.');
-      }
+      if (!response.ok) throw new Error(data.error || 'Error al enviar código provisional.');
 
       setSentPin(generated);
       setPinExpiresAt(Date.now() + 15 * 60 * 1000);
@@ -328,69 +306,34 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
       if (data.simulated && data.devCode) {
         setForgotCode(data.devCode);
-        setInfoMessage(`🔔 Modo pruebas: Tu código provisional es ${data.devCode}`);
+        setInfoMessage(`🔔 Código provisional para pruebas: ${data.devCode}`);
       } else {
-        setInfoMessage(`✅ Hemos enviado un código provisional a ${cleanEmail}. Revisa tu bandeja de entrada o spam.`);
+        setInfoMessage(`✅ Código provisional enviado a ${cleanEmail}.`);
       }
     } catch (err: any) {
-      console.error(err);
-      setError(err?.message || 'Error al procesar la solicitud de recuperación.');
+      setError(err?.message || 'Error al procesar la recuperación de cuenta.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Reenviar código de recuperación
-  const handleResendRecoveryCode = async () => {
-    if (resendCooldown > 0 || !forgotEmail.trim() || !forgotUsername) return;
-    setIsLoading(true);
-    setError('');
-    const generated = Math.floor(100000 + Math.random() * 900000).toString();
-
-    try {
-      const response = await fetch('/api/send-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: forgotEmail.trim().toLowerCase(),
-          username: forgotUsername,
-          code: generated,
-          type: 'recovery'
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Error al reenviar el código.');
-
-      setSentPin(generated);
-      setPinExpiresAt(Date.now() + 15 * 60 * 1000);
-      setResendCooldown(60);
-      setInfoMessage(`✅ Nuevo código provisional enviado a ${forgotEmail.trim()}.`);
-    } catch (err: any) {
-      setError(err?.message || 'Error al reenviar el código.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // Paso 2: Validar código y actualizar contraseña en Supabase
+  // RECUPERACIÓN: ACTUALIZAR CONTRASEÑA
   const handleResetPasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-    setInfoMessage('');
+    clearMessages();
 
     if (!sentPin) {
-      setError('Debes solicitar un código primero.');
+      setError('Primero debes solicitar un código.');
       return;
     }
 
     if (pinExpiresAt && Date.now() > pinExpiresAt) {
-      setError('El código provisional ha expirado. Por favor solicita uno nuevo.');
+      setError('El código ha expirado. Solicita uno nuevo.');
       return;
     }
 
     if (forgotCode.trim() !== sentPin) {
-      setError('El código provisional de 6 dígitos es incorrecto.');
+      setError('El código ingresado es incorrecto.');
       return;
     }
 
@@ -406,539 +349,461 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
     setIsLoading(true);
     try {
-      // Guardar la nueva contraseña cifrada en la base de datos
       await resetUserPassword(forgotUsername, newPassword);
-
-      // Autenticar al usuario de inmediato con las nuevas credenciales
       const authenticatedUser = await authenticateUser(forgotUsername, newPassword);
       if (authenticatedUser) {
         onLogin(authenticatedUser);
       } else {
-        // Redirigir al inicio de sesión con el usuario ya rellenado
-        setIsForgotPassword(false);
-        setUsername(forgotUsername);
-        setPassword('');
-        resetAllFeedback();
-        setInfoMessage('¡Contraseña actualizada con éxito! Ya puedes iniciar sesión.');
+        setAuthMode('login');
+        setLoginIdentifier(forgotUsername);
+        setLoginPassword('');
+        setInfoMessage('¡Contraseña restablecida! Ya puedes iniciar sesión.');
       }
     } catch (err: any) {
-      console.error(err);
-      setError(err?.message || 'Error al actualizar la contraseña en la base de datos.');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  // -------------------------------------------------------------
-  // INICIO DE SESIÓN TRADICIONAL
-  // -------------------------------------------------------------
-  const handleLoginSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setIsLoading(true);
-    setError('');
-    setInfoMessage('');
-
-    try {
-      const authenticatedUser = await authenticateUser(username, password);
-      if (authenticatedUser) {
-        onLogin(authenticatedUser);
-      } else {
-        setError('Credenciales incorrectas. Intenta de nuevo.');
-      }
-    } catch (err: any) {
-      setError(err?.message || 'Error al conectar con la base de datos.');
+      setError(err?.message || 'Error al guardar la nueva contraseña.');
     } finally {
       setIsLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-indigo-100 dark:bg-indigo-950 p-4 transition-colors duration-300">
-      <div className="bg-white dark:bg-indigo-900 p-8 md:p-12 rounded-[3rem] shadow-2xl w-full max-w-md border-8 border-indigo-50 dark:border-indigo-800">
+    <div className="min-h-screen flex flex-col justify-center items-center bg-slate-50 dark:bg-slate-950 p-4 transition-colors">
+      <div className="w-full max-w-[420px] bg-white dark:bg-slate-900 rounded-3xl shadow-xl shadow-slate-200/50 dark:shadow-none border border-slate-200/80 dark:border-slate-800 p-8 md:p-10">
         
-        {/* Logo y Encabezado */}
-        <div className="text-center mb-6">
-          <div className="w-24 h-24 md:w-28 md:h-28 mx-auto mb-2 transform hover:rotate-3 transition-transform">
-            <img src="/icon.png" alt="Buensoft Education Logo" className="w-full h-full object-contain" />
+        {/* ENCABEZADO PROFESIONAL */}
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 mx-auto mb-4 p-2 bg-indigo-50 dark:bg-indigo-950/60 rounded-2xl flex items-center justify-center border border-indigo-100 dark:border-indigo-900/50">
+            <img src="/icon.png" alt="Buensoft Education" className="w-full h-full object-contain" />
           </div>
-          <p className="text-[10px] font-black text-indigo-300 dark:text-indigo-500 mb-2 uppercase tracking-widest">v{pkg.version}</p>
-          <h2 className="text-3xl font-black text-indigo-900 dark:text-white uppercase tracking-tight mb-1">
-            {isForgotPassword 
-              ? 'Recuperar Cuenta' 
-              : isRegistering 
-                ? (registerStep === 'verify_pin' ? 'Confirmar PIN' : 'Crear Cuenta') 
-                : 'Bienvenido'}
-          </h2>
-          <p className="text-indigo-500 dark:text-indigo-300 font-bold uppercase text-xs tracking-widest">
-            {isForgotPassword
-              ? 'Restablece tu acceso fácilmente'
-              : isRegistering 
-                ? '🎁 ¡3 clases demo gratis incluidas!' 
-                : '¡La educación del futuro hoy!'}
+          <h1 className="text-2xl font-bold text-slate-900 dark:text-white tracking-tight">
+            {authMode === 'login' && 'Iniciar Sesión'}
+            {authMode === 'register' && (registerStep === 'verify_pin' ? 'Confirmar Código' : 'Crear Cuenta')}
+            {authMode === 'forgot' && 'Recuperar Cuenta'}
+          </h1>
+          <p className="text-sm text-slate-500 dark:text-slate-400 mt-1.5">
+            {authMode === 'login' && 'Accede a tu aula en Buensoft Education'}
+            {authMode === 'register' && (registerStep === 'verify_pin' ? 'Ingresa el PIN enviado a tu correo' : 'Comienza con 3 clases demo gratis')}
+            {authMode === 'forgot' && 'Restablece tu acceso fácilmente'}
           </p>
         </div>
 
-        {/* Pestañas de Iniciar Sesión / Registro (Ocultas durante recuperación) */}
-        {!isForgotPassword && (
-          <div className="flex bg-indigo-50 dark:bg-indigo-950 p-1.5 rounded-2xl mb-6 border-2 border-indigo-100 dark:border-indigo-800">
-            <button
-              type="button"
-              onClick={() => { 
-                setIsRegistering(false); 
-                setRegisterStep('form'); 
-                resetAllFeedback(); 
-              }}
-              className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase transition-all ${
-                !isRegistering
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'text-indigo-400 dark:text-indigo-300 hover:text-indigo-700'
-              }`}
-            >
-              Iniciar Sesión
-            </button>
-            <button
-              type="button"
-              onClick={() => { 
-                setIsRegistering(true); 
-                setRegisterStep('form'); 
-                resetAllFeedback(); 
-              }}
-              className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase transition-all ${
-                isRegistering
-                  ? 'bg-indigo-600 text-white shadow-md'
-                  : 'text-indigo-400 dark:text-indigo-300 hover:text-indigo-700'
-              }`}
-            >
-              Registrarse ✨
-            </button>
-          </div>
-        )}
-
-        {/* BOTÓN GOOGLE SIGN-IN DIRECTO (Solo si no está en recuperación) */}
-        {!isForgotPassword && registerStep === 'form' && (
+        {/* BOTÓN GOOGLE SIGN-IN */}
+        {(authMode === 'login' || (authMode === 'register' && registerStep === 'form')) && (
           <div className="mb-6">
             <div className="flex justify-center">
-              <div ref={googleBtnRef} className="min-h-[44px] flex justify-center"></div>
+              <div ref={googleBtnRef} className="min-h-[44px] flex justify-center w-full"></div>
             </div>
 
-            {/* Divisor */}
-            <div className="relative flex py-4 items-center">
-              <div className="flex-grow border-t border-indigo-100 dark:border-indigo-800"></div>
-              <span className="flex-shrink mx-4 text-[10px] font-black uppercase text-indigo-300 dark:text-indigo-600 tracking-wider">
-                O con tu cuenta
-              </span>
-              <div className="flex-grow border-t border-indigo-100 dark:border-indigo-800"></div>
+            {/* Divisor "o con tu correo" */}
+            <div className="relative my-6">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-200 dark:border-slate-800" />
+              </div>
+              <div className="relative flex justify-center text-xs">
+                <span className="bg-white dark:bg-slate-900 px-3 text-slate-400 dark:text-slate-500 font-medium">
+                  o con tu cuenta
+                </span>
+              </div>
             </div>
           </div>
         )}
 
-        {/* MENSAJES DE ERROR E INFO */}
+        {/* AVISOS DE ERROR O ÉXITO */}
         {error && (
-          <p className="text-red-500 text-xs font-black text-center bg-red-50 dark:bg-red-900/30 p-3 rounded-2xl border-2 border-red-100 dark:border-red-900/50 uppercase tracking-tight mb-4 animate-in fade-in">
+          <div className="mb-5 p-3.5 rounded-xl bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 text-red-600 dark:text-red-400 text-xs font-semibold text-center animate-in fade-in">
             {error}
-          </p>
+          </div>
         )}
 
         {infoMessage && (
-          <p className="text-indigo-700 dark:text-indigo-300 text-xs font-bold text-center bg-indigo-50 dark:bg-indigo-950/60 p-3 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 mb-4 animate-in fade-in">
+          <div className="mb-5 p-3.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-900 text-indigo-700 dark:text-indigo-300 text-xs font-medium text-center animate-in fade-in">
             {infoMessage}
-          </p>
+          </div>
         )}
 
         {/* ------------------------------------------------------------- */}
-        {/* SECCIÓN 1: MODO RECUPERACIÓN ("Olvidé mi usuario o contraseña") */}
+        {/* VISTA 1: INICIAR SESIÓN */}
         {/* ------------------------------------------------------------- */}
-        {isForgotPassword ? (
-          forgotStep === 'email' ? (
-            /* PASO 1 RECUPERACIÓN: INGRESAR CORREO */
-            <form onSubmit={handleSendRecoveryCode} className="space-y-4 animate-in fade-in">
-              <div className="bg-indigo-50 dark:bg-indigo-950/60 p-4 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 text-left">
-                <p className="text-xs font-bold text-indigo-800 dark:text-indigo-200 leading-relaxed">
-                  Ingresa tu correo electrónico registrado. Te enviaremos un código provisional para comprobar tu identidad, recordarte tu nombre de usuario y permitirte restablecer tu contraseña.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1.5 ml-2">
-                  Correo Electrónico Registrado
-                </label>
-                <input 
-                  type="email" 
-                  value={forgotEmail}
-                  onChange={(e) => setForgotEmail(e.target.value)}
-                  className="w-full px-5 py-3.5 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200"
-                  placeholder="tu@correo.com"
-                  required
-                  disabled={isLoading}
-                  autoFocus
-                />
-              </div>
-
-              <button 
-                type="submit"
-                disabled={isLoading}
-                className={`w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-xl transition-all transform active:scale-95 flex items-center justify-center space-x-2 text-sm md:text-base uppercase tracking-wider ${
-                  isLoading ? 'opacity-70' : 'hover:bg-indigo-700 hover:shadow-indigo-200 dark:hover:shadow-none'
-                }`}
-              >
-                {isLoading ? (
-                  <>
-                    <div className="w-5 h-5 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
-                    <span>Buscando cuenta...</span>
-                  </>
-                ) : (
-                  <span>ENVIAR CÓDIGO PROVISIONAL ✉️</span>
-                )}
-              </button>
-
-              <div className="text-center pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsForgotPassword(false);
-                    resetAllFeedback();
-                  }}
-                  className="text-xs font-black text-indigo-500 hover:underline uppercase"
-                >
-                  ← Volver a Iniciar Sesión
-                </button>
-              </div>
-            </form>
-          ) : (
-            /* PASO 2 RECUPERACIÓN: CÓDIGO + NUEVA CONTRASEÑA */
-            <form onSubmit={handleResetPasswordSubmit} className="space-y-3.5 animate-in fade-in">
-              {/* Tarjeta recordando el nombre de usuario detectado */}
-              <div className="bg-emerald-50 dark:bg-emerald-950/40 p-4 rounded-2xl border-2 border-emerald-200 dark:border-emerald-800 text-center">
-                <p className="text-[10px] font-black uppercase tracking-wider text-emerald-600 dark:text-emerald-400 mb-0.5">
-                  Tu Nombre de Usuario es:
-                </p>
-                <p className="text-xl font-black text-emerald-950 dark:text-white">
-                  @{forgotUsername}
-                </p>
-                <p className="text-[10px] text-emerald-700 dark:text-emerald-300 font-medium mt-1">
-                  Usa este usuario para entrar al aula una vez actualizada tu contraseña.
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1 ml-2">
-                  Código Provisional (6 dígitos)
-                </label>
-                <input 
-                  type="text" 
-                  maxLength={6}
-                  value={forgotCode}
-                  onChange={(e) => setForgotCode(e.target.value.replace(/\D/g, ''))}
-                  className="w-full tracking-[8px] text-center text-2xl font-black py-2.5 rounded-2xl border-4 border-indigo-200 dark:border-indigo-700 bg-white dark:bg-indigo-950 text-indigo-950 dark:text-white focus:border-indigo-600 outline-none transition-all"
-                  placeholder="123456"
-                  required
-                  disabled={isLoading}
-                  autoFocus
-                />
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1 ml-2">
-                    Nueva Contraseña
-                  </label>
-                  <input 
-                    type="password" 
-                    value={newPassword}
-                    onChange={(e) => setNewPassword(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200 text-sm"
-                    placeholder="••••••••"
-                    required
-                    disabled={isLoading}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1 ml-2">
-                    Confirmar
-                  </label>
-                  <input 
-                    type="password" 
-                    value={confirmNewPassword}
-                    onChange={(e) => setConfirmNewPassword(e.target.value)}
-                    className="w-full px-4 py-2.5 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200 text-sm"
-                    placeholder="••••••••"
-                    required
-                    disabled={isLoading}
-                  />
-                </div>
-              </div>
-
-              <button 
-                type="submit"
-                disabled={isLoading || forgotCode.length < 6}
-                className={`w-full bg-emerald-600 text-white font-black py-3.5 rounded-2xl shadow-xl transition-all transform active:scale-95 flex items-center justify-center space-x-2 text-sm uppercase tracking-wider ${
-                  isLoading || forgotCode.length < 6 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-emerald-700'
-                }`}
-              >
-                {isLoading ? (
-                  <>
-                    <div className="w-5 h-5 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
-                    <span>Actualizando...</span>
-                  </>
-                ) : (
-                  <span>GUARDAR CONTRASEÑA Y ENTRAR 🔑</span>
-                )}
-              </button>
-
-              <div className="flex justify-between items-center text-[11px] pt-2 font-black">
-                <button
-                  type="button"
-                  onClick={() => { setForgotStep('email'); resetAllFeedback(); }}
-                  className="text-indigo-400 hover:underline uppercase"
-                >
-                  ← Cambiar correo
-                </button>
-                <button
-                  type="button"
-                  onClick={handleResendRecoveryCode}
-                  disabled={resendCooldown > 0 || isLoading}
-                  className="text-indigo-600 dark:text-indigo-300 hover:underline uppercase disabled:opacity-50"
-                >
-                  {resendCooldown > 0 ? `Reenviar en ${resendCooldown}s` : 'Reenviar código 🔄'}
-                </button>
-              </div>
-            </form>
-          )
-        ) : !isRegistering ? (
-          /* ------------------------------------------------------------- */
-          /* SECCIÓN 2: INICIO DE SESIÓN REGULAR */
-          /* ------------------------------------------------------------- */
+        {authMode === 'login' && (
           <form onSubmit={handleLoginSubmit} className="space-y-4">
             <div>
-              <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1.5 ml-2">
-                Usuario
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                Correo o Usuario
               </label>
-              <input 
-                type="text" 
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-5 py-3.5 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200"
-                placeholder="Tu usuario..."
+              <input
+                type="text"
+                value={loginIdentifier}
+                onChange={(e) => setLoginIdentifier(e.target.value)}
+                placeholder="tu@correo.com o tu usuario"
                 required
                 disabled={isLoading}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 outline-none transition-all placeholder:text-slate-400"
               />
             </div>
 
             <div>
-              <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1.5 ml-2">
-                Contraseña
-              </label>
-              <input 
-                type="password" 
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full px-5 py-3.5 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200"
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+                  Contraseña
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAuthMode('forgot');
+                    setForgotStep('email');
+                    clearMessages();
+                  }}
+                  className="text-xs text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 hover:underline font-medium transition-colors"
+                >
+                  ¿Olvidaste tu contraseña?
+                </button>
+              </div>
+              <input
+                type="password"
+                value={loginPassword}
+                onChange={(e) => setLoginPassword(e.target.value)}
                 placeholder="••••••••"
                 required
                 disabled={isLoading}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 outline-none transition-all placeholder:text-slate-400"
               />
-              {/* ENLACE ¿OLVIDASTE TU USUARIO O CONTRASEÑA? */}
-              <div className="flex justify-end pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsForgotPassword(true);
-                    setForgotStep('email');
-                    resetAllFeedback();
-                  }}
-                  className="text-xs font-bold text-indigo-500 hover:text-indigo-700 dark:text-indigo-300 dark:hover:text-white transition-colors underline"
-                >
-                  ¿Olvidaste tu usuario o contraseña?
-                </button>
-              </div>
             </div>
 
-            <button 
+            <button
               type="submit"
               disabled={isLoading}
-              className={`w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-xl transition-all transform active:scale-95 flex items-center justify-center space-x-2 text-base md:text-lg uppercase tracking-widest ${
-                isLoading ? 'opacity-70' : 'hover:bg-indigo-700 hover:shadow-indigo-200 dark:hover:shadow-none'
-              }`}
+              className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-xl shadow-sm transition-all focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 text-sm flex items-center justify-center space-x-2 disabled:opacity-60"
             >
               {isLoading ? (
                 <>
-                  <div className="w-5 h-5 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Entrando...</span>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Iniciando sesión...</span>
                 </>
               ) : (
-                <span>ENTRAR AL AULA 🚀</span>
+                <span>Iniciar Sesión</span>
               )}
             </button>
+
+            <div className="mt-6 text-center text-xs text-slate-500 dark:text-slate-400 pt-2">
+              ¿No tienes una cuenta?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('register');
+                  setRegisterStep('form');
+                  clearMessages();
+                }}
+                className="text-indigo-600 dark:text-indigo-400 hover:underline font-semibold"
+              >
+                Regístrate gratis
+              </button>
+            </div>
           </form>
-        ) : registerStep === 'form' ? (
-          /* ------------------------------------------------------------- */
-          /* SECCIÓN 3: REGISTRO PASO 1 (DATOS + ENVÍO CÓDIGO RESEND) */
-          /* ------------------------------------------------------------- */
-          <form onSubmit={handleSendPin} className="space-y-3.5">
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* VISTA 2: REGISTRO PASO 1 (FORMULARIO) */}
+        {/* ------------------------------------------------------------- */}
+        {authMode === 'register' && registerStep === 'form' && (
+          <form onSubmit={handleSendRegisterPin} className="space-y-3.5">
             <div>
-              <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1 ml-2">
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                 Nombre de Usuario
               </label>
-              <input 
-                type="text" 
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                className="w-full px-5 py-3 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200"
-                placeholder="Elige tu usuario..."
+              <input
+                type="text"
+                value={regUsername}
+                onChange={(e) => setRegUsername(e.target.value)}
+                placeholder="Elige tu nombre de usuario"
                 required
                 disabled={isLoading}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 outline-none transition-all placeholder:text-slate-400"
               />
             </div>
 
             <div>
-              <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1 ml-2">
-                Correo Electrónico (Para enviar tu PIN)
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Correo Electrónico
               </label>
-              <input 
-                type="email" 
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                className="w-full px-5 py-3 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200"
+              <input
+                type="email"
+                value={regEmail}
+                onChange={(e) => setRegEmail(e.target.value)}
                 placeholder="tu@correo.com"
                 required
                 disabled={isLoading}
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 outline-none transition-all placeholder:text-slate-400"
               />
             </div>
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1 ml-2">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Contraseña
                 </label>
-                <input 
-                  type="password" 
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200 text-sm"
+                <input
+                  type="password"
+                  value={regPassword}
+                  onChange={(e) => setRegPassword(e.target.value)}
                   placeholder="••••••••"
                   required
                   disabled={isLoading}
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 outline-none transition-all placeholder:text-slate-400"
                 />
               </div>
-
               <div>
-                <label className="block text-[10px] font-black text-indigo-400 dark:text-indigo-500 uppercase tracking-widest mb-1 ml-2">
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
                   Confirmar
                 </label>
-                <input 
-                  type="password" 
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  className="w-full px-4 py-3 rounded-2xl border-4 border-indigo-50 dark:border-indigo-800 bg-white dark:bg-indigo-950 text-indigo-900 dark:text-white font-bold focus:border-indigo-500 outline-none transition-all placeholder:text-indigo-200 text-sm"
+                <input
+                  type="password"
+                  value={regConfirmPassword}
+                  onChange={(e) => setRegConfirmPassword(e.target.value)}
                   placeholder="••••••••"
                   required
                   disabled={isLoading}
+                  className="w-full px-3 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 outline-none transition-all placeholder:text-slate-400"
                 />
               </div>
             </div>
 
-            <button 
+            <button
               type="submit"
               disabled={isLoading}
-              className={`w-full bg-indigo-600 text-white font-black py-4 rounded-2xl shadow-xl transition-all transform active:scale-95 flex items-center justify-center space-x-2 text-sm md:text-base uppercase tracking-wider ${
-                isLoading ? 'opacity-70' : 'hover:bg-indigo-700 hover:shadow-indigo-200 dark:hover:shadow-none'
-              }`}
+              className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center space-x-2 disabled:opacity-60"
             >
               {isLoading ? (
                 <>
-                  <div className="w-5 h-5 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
                   <span>Enviando código...</span>
                 </>
               ) : (
-                <span>ENVIAR CÓDIGO POR CORREO ✉️</span>
+                <span>Continuar con mi correo</span>
               )}
             </button>
+
+            <div className="mt-5 text-center text-xs text-slate-500 dark:text-slate-400">
+              ¿Ya tienes una cuenta?{' '}
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('login');
+                  clearMessages();
+                }}
+                className="text-indigo-600 dark:text-indigo-400 hover:underline font-semibold"
+              >
+                Inicia sesión
+              </button>
+            </div>
           </form>
-        ) : (
-          /* ------------------------------------------------------------- */
-          /* SECCIÓN 4: REGISTRO PASO 2 (CONFIRMAR PIN RESEND) */
-          /* ------------------------------------------------------------- */
-          <form onSubmit={handleConfirmPinAndRegister} className="space-y-4 animate-in fade-in">
-            <div className="bg-indigo-50 dark:bg-indigo-950/60 p-4 rounded-2xl border-2 border-indigo-100 dark:border-indigo-800 text-center">
-              <p className="text-xs font-bold text-indigo-700 dark:text-indigo-200 mb-1">
-                Ingresa el código de 6 dígitos enviado a:
-              </p>
-              <p className="text-xs font-black text-indigo-950 dark:text-white">
-                {email}
-              </p>
+        )}
+
+        {/* ------------------------------------------------------------- */}
+        {/* VISTA 2.1: REGISTRO PASO 2 (CONFIRMAR PIN) */}
+        {/* ------------------------------------------------------------- */}
+        {authMode === 'register' && registerStep === 'verify_pin' && (
+          <form onSubmit={handleConfirmRegisterPin} className="space-y-4">
+            <div className="text-center p-3.5 bg-slate-50 dark:bg-slate-950 rounded-xl border border-slate-200 dark:border-slate-800 text-xs text-slate-600 dark:text-slate-400">
+              Código enviado a <strong className="text-slate-900 dark:text-white">{regEmail}</strong>
             </div>
 
             <div>
-              <input 
-                type="text" 
+              <input
+                type="text"
                 maxLength={6}
                 value={pinCode}
                 onChange={(e) => setPinCode(e.target.value.replace(/\D/g, ''))}
-                className="w-full tracking-[10px] text-center text-3xl font-black py-3 rounded-2xl border-4 border-indigo-200 dark:border-indigo-700 bg-white dark:bg-indigo-950 text-indigo-950 dark:text-white focus:border-indigo-600 outline-none transition-all"
                 placeholder="123456"
-                required
-                disabled={isLoading}
                 autoFocus
+                required
+                className="w-full tracking-[8px] text-center text-2xl font-bold py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:border-indigo-600 outline-none transition-all"
               />
             </div>
 
-            <button 
+            <button
               type="submit"
               disabled={isLoading || pinCode.length < 6}
-              className={`w-full bg-green-600 text-white font-black py-4 rounded-2xl shadow-xl transition-all transform active:scale-95 flex items-center justify-center space-x-2 text-sm md:text-base uppercase tracking-wider ${
-                isLoading || pinCode.length < 6 ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'
-              }`}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 px-4 rounded-xl shadow-sm transition-all text-sm disabled:opacity-50"
             >
-              {isLoading ? (
-                <>
-                  <div className="w-5 h-5 border-4 border-white border-t-transparent rounded-full animate-spin"></div>
-                  <span>Creando cuenta...</span>
-                </>
-              ) : (
-                <span>CONFIRMAR Y CREAR CUENTA 🎓</span>
-              )}
+              {isLoading ? 'Verificando...' : 'Crear Cuenta'}
             </button>
 
-            <div className="flex justify-between items-center text-[11px] pt-2 font-black">
+            <div className="flex justify-between items-center text-xs pt-1">
               <button
                 type="button"
-                onClick={() => { setRegisterStep('form'); resetAllFeedback(); }}
-                className="text-indigo-400 hover:underline uppercase"
+                onClick={() => {
+                  setRegisterStep('form');
+                  clearMessages();
+                }}
+                className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
               >
                 ← Corregir datos
               </button>
               <button
                 type="button"
-                onClick={handleResendPin}
+                onClick={handleSendRegisterPin}
                 disabled={resendCooldown > 0 || isLoading}
-                className="text-indigo-600 dark:text-indigo-300 hover:underline uppercase disabled:opacity-50"
+                className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium disabled:opacity-50"
               >
-                {resendCooldown > 0 ? `Reenviar en ${resendCooldown}s` : 'Reenviar PIN 🔄'}
+                {resendCooldown > 0 ? `Reenviar en ${resendCooldown}s` : 'Reenviar código'}
               </button>
             </div>
           </form>
         )}
 
-        {/* Alternar entre Login y Registro (Oculto en recuperación) */}
-        {!isForgotPassword && (
-          <div className="mt-6 text-center">
+        {/* ------------------------------------------------------------- */}
+        {/* VISTA 3: RECUPERACIÓN DE CONTRASEÑA O USUARIO */}
+        {/* ------------------------------------------------------------- */}
+        {authMode === 'forgot' && forgotStep === 'email' && (
+          <form onSubmit={handleSendRecoveryCode} className="space-y-4">
+            <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+              Ingresa el correo electrónico asociado a tu cuenta. Te enviaremos un código provisional para restablecer tu contraseña y recordarte tu usuario.
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                Correo Electrónico
+              </label>
+              <input
+                type="email"
+                value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+                placeholder="tu@correo.com"
+                required
+                disabled={isLoading}
+                autoFocus
+                className="w-full px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 focus:ring-2 focus:ring-indigo-600/20 outline-none transition-all placeholder:text-slate-400"
+              />
+            </div>
+
             <button
-              type="button"
-              onClick={() => {
-                setIsRegistering(!isRegistering);
-                setRegisterStep('form');
-                resetAllFeedback();
-              }}
-              className="text-xs font-black text-indigo-500 dark:text-indigo-300 hover:underline uppercase"
+              type="submit"
+              disabled={isLoading}
+              className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-2.5 px-4 rounded-xl shadow-sm transition-all text-sm flex items-center justify-center space-x-2 disabled:opacity-60"
             >
-              {isRegistering
-                ? '¿Ya tienes una cuenta? Inicia sesión aquí'
-                : '¿Nuevo estudiante? Regístrate y recibe 3 clases gratis'}
+              {isLoading ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Buscando cuenta...</span>
+                </>
+              ) : (
+                <span>Enviar Código</span>
+              )}
             </button>
-          </div>
+
+            <div className="text-center pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAuthMode('login');
+                  clearMessages();
+                }}
+                className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 font-medium"
+              >
+                ← Volver a Iniciar Sesión
+              </button>
+            </div>
+          </form>
         )}
 
+        {/* ------------------------------------------------------------- */}
+        {/* VISTA 3.1: RECUPERACIÓN PASO 2 (CÓDIGO + NUEVA CONTRASEÑA) */}
+        {/* ------------------------------------------------------------- */}
+        {authMode === 'forgot' && forgotStep === 'code' && (
+          <form onSubmit={handleResetPasswordSubmit} className="space-y-3.5">
+            {/* Recordatorio amigable del nombre de usuario */}
+            <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 rounded-xl border border-emerald-200 dark:border-emerald-800 text-center">
+              <span className="text-[11px] font-medium text-emerald-700 dark:text-emerald-400 uppercase tracking-wider block">
+                Tu usuario registrado es
+              </span>
+              <span className="text-base font-bold text-emerald-950 dark:text-white">
+                @{forgotUsername}
+              </span>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                Código Provisional (6 dígitos)
+              </label>
+              <input
+                type="text"
+                maxLength={6}
+                value={forgotCode}
+                onChange={(e) => setForgotCode(e.target.value.replace(/\D/g, ''))}
+                placeholder="123456"
+                autoFocus
+                required
+                className="w-full tracking-[8px] text-center text-xl font-bold py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white focus:border-indigo-600 outline-none transition-all"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Nueva Contraseña
+                </label>
+                <input
+                  type="password"
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  disabled={isLoading}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 outline-none transition-all placeholder:text-slate-400"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Confirmar
+                </label>
+                <input
+                  type="password"
+                  value={confirmNewPassword}
+                  onChange={(e) => setConfirmNewPassword(e.target.value)}
+                  placeholder="••••••••"
+                  required
+                  disabled={isLoading}
+                  className="w-full px-3 py-2 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-950 text-slate-900 dark:text-white text-sm focus:border-indigo-600 outline-none transition-all placeholder:text-slate-400"
+                />
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoading || forgotCode.length < 6}
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-2.5 px-4 rounded-xl shadow-sm transition-all text-sm disabled:opacity-50"
+            >
+              {isLoading ? 'Actualizando...' : 'Guardar y Entrar'}
+            </button>
+
+            <div className="flex justify-between items-center text-xs pt-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setForgotStep('email');
+                  clearMessages();
+                }}
+                className="text-slate-500 hover:text-slate-700 dark:hover:text-slate-300"
+              >
+                ← Cambiar correo
+              </button>
+              <button
+                type="button"
+                onClick={handleSendRecoveryCode}
+                disabled={resendCooldown > 0 || isLoading}
+                className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium disabled:opacity-50"
+              >
+                {resendCooldown > 0 ? `Reenviar en ${resendCooldown}s` : 'Reenviar código'}
+              </button>
+            </div>
+          </form>
+        )}
+
+      </div>
+
+      {/* PIE DE PÁGINA DISCRETO CON LA VERSIÓN (No ocupa espacio en la ventana) */}
+      <div className="mt-8 text-center text-xs text-slate-400 dark:text-slate-500">
+        Buensoft Education v{pkg.version} • La educación del futuro hoy
       </div>
     </div>
   );

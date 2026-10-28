@@ -150,11 +150,14 @@ export const authenticateUser = async (username: string, passwordInput: string):
   if (!cleanUsername || !passwordInput) return null;
 
   // 1. Consultar ÚNICAMENTE el registro del usuario solicitado (jamás todos los usuarios)
-  const { data: targetUser, error } = await supabase
+  // 1. Consultar ÚNICAMENTE el registro del usuario solicitado (por username o por correo)
+  let userQuery = supabase
     .from('users')
-    .select('id, username, password, email, role, student_profile, preferred_teacher_profile')
-    .ilike('username', cleanUsername)
-    .maybeSingle();
+    .select('id, username, password, email, role, student_profile, preferred_teacher_profile');
+
+  const { data: targetUser, error } = cleanUsername.includes('@')
+    ? await userQuery.ilike('email', cleanUsername).maybeSingle()
+    : await userQuery.ilike('username', cleanUsername).maybeSingle();
 
   if (error || !targetUser) {
     return null;
