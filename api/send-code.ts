@@ -13,7 +13,7 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ error: 'Method Not Allowed' });
   }
 
-  const { email, username, code } = req.body || {};
+  const { email, username, code, type } = req.body || {};
 
   if (!email || !code) {
     return res.status(400).json({ error: 'Faltan parámetros requeridos (email y código).' });
@@ -22,6 +22,7 @@ export default async function handler(req: any, res: any) {
   const cleanEmail = String(email).trim().toLowerCase();
   const cleanCode = String(code).trim();
   const cleanUsername = String(username || 'Estudiante').trim();
+  const isRecovery = type === 'recovery';
 
   // Validar formato de email básico
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -48,22 +49,36 @@ export default async function handler(req: any, res: any) {
       fromSender = `Buensoft Education <${fromSender.trim()}>`;
     }
 
+    const emailSubject = isRecovery 
+      ? `Recuperación de acceso - Buensoft Education: ${cleanCode}`
+      : `Tu código de verificación de Buensoft Education: ${cleanCode}`;
+
+    const subtitle = isRecovery ? 'Recuperación de Cuenta' : 'Validación de Correo Electrónico';
+
+    const greetingText = isRecovery
+      ? `Hola <strong>${cleanUsername}</strong> (este es tu nombre de usuario para iniciar sesión). Usa el siguiente código provisional para restablecer tu contraseña:`
+      : `Hola <strong>${cleanUsername}</strong>, usa el siguiente código de 6 dígitos para validar tu cuenta:`;
+
+    const footerNotice = isRecovery
+      ? 'Este código vence en 15 minutos. Si no solicitaste restablecer tu cuenta, puedes ignorar este mensaje de forma segura.'
+      : 'Este código vence en 15 minutos. Si no solicitaste este código, puedes ignorar este mensaje.';
+
     const htmlContent = `
       <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 560px; margin: 0 auto; padding: 32px 24px; background: #ffffff; border-radius: 24px; border: 1px solid #e0e7ff;">
         <div style="text-align: center; margin-bottom: 24px;">
           <h1 style="color: #4338ca; font-size: 26px; font-weight: 800; margin: 0 0 8px 0; text-transform: uppercase;">Buensoft Education</h1>
-          <p style="color: #6366f1; font-size: 13px; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: 1px;">Validación de Correo Electrónico</p>
+          <p style="color: #6366f1; font-size: 13px; font-weight: 700; margin: 0; text-transform: uppercase; letter-spacing: 1px;">${subtitle}</p>
         </div>
 
         <div style="background: #f8fafc; border-radius: 16px; padding: 24px; text-align: center; margin-bottom: 24px; border: 1px solid #e2e8f0;">
           <p style="color: #1e293b; font-size: 15px; margin: 0 0 16px 0;">
-            Hola <strong>${cleanUsername}</strong>, usa el siguiente código de 6 dígitos para validar tu cuenta:
+            ${greetingText}
           </p>
           <div style="display: inline-block; background: #4f46e5; color: #ffffff; font-size: 32px; font-weight: 900; letter-spacing: 8px; padding: 12px 28px; border-radius: 14px;">
             ${cleanCode}
           </div>
           <p style="color: #64748b; font-size: 12px; margin: 16px 0 0 0;">
-            Este código vence en 15 minutos. Si no solicitaste este código, puedes ignorar este mensaje.
+            ${footerNotice}
           </p>
         </div>
 
@@ -83,7 +98,7 @@ export default async function handler(req: any, res: any) {
       body: JSON.stringify({
         from: fromSender,
         to: [cleanEmail],
-        subject: `Tu código de verificación de Buensoft Education: ${cleanCode}`,
+        subject: emailSubject,
         html: htmlContent
       })
     });
@@ -102,7 +117,7 @@ export default async function handler(req: any, res: any) {
         body: JSON.stringify({
           from: fallbackSender,
           to: [cleanEmail],
-          subject: `Tu código de verificación de Buensoft Education: ${cleanCode}`,
+          subject: emailSubject,
           html: htmlContent
         })
       });

@@ -292,6 +292,45 @@ export const updateUser = async (originalUsername: string, updatedUser: User) =>
   if (error) throw error;
 };
 
+/**
+ * Busca un usuario por su correo electrónico (insensible a mayúsculas/minúsculas)
+ */
+export const findUserByEmail = async (email: string): Promise<User | null> => {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) return null;
+
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, username, email, role, password')
+    .ilike('email', cleanEmail)
+    .maybeSingle();
+
+  if (error || !data) return null;
+  return data;
+};
+
+/**
+ * Restablece la contraseña de un usuario en la base de datos
+ */
+export const resetUserPassword = async (username: string, newPassword: string): Promise<void> => {
+  if (!newPassword || newPassword.length < 4) {
+    throw new Error('La contraseña debe tener al menos 4 caracteres.');
+  }
+
+  const cleanUsername = username.trim();
+  const newHash = await hashPassword(newPassword);
+
+  const { error } = await supabase
+    .from('users')
+    .update({ password: newHash })
+    .ilike('username', cleanUsername);
+
+  if (error) {
+    console.error("Error al restablecer contraseña:", error);
+    throw error;
+  }
+};
+
 export const updateUserEmail = async (username: string, email: string): Promise<void> => {
   const cleanEmail = email.trim().toLowerCase();
   if (!cleanEmail) throw new Error("Correo electrónico inválido.");
