@@ -168,6 +168,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       setRegisterStep('verify_pin');
 
       if (data.simulated && data.devCode) {
+        setPinCode(data.devCode);
         setInfoMessage(`🔔 Aviso: ${data.message}`);
       } else {
         setInfoMessage(`✅ Código enviado a ${email.trim()}. Revisa tu buzón de entrada o spam.`);
