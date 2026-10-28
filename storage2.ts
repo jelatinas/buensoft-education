@@ -1067,17 +1067,18 @@ export const getAuditStatusesBulk = async (studentId: string, studentUsername: s
     const validClassIds = resolvedIds.filter((id): id is string => id !== null);
     if (validClassIds.length === 0) return {};
 
-    // 2. Fetch all class_chat_history for this student
+        // 2. Fetch all class_chat_history for this student (buscar por UUID y por Username)
+    const studentIdentifiers = Array.from(new Set([studentId, studentUsername].filter(Boolean)));
     const { data: geminiLessons } = await supabase
       .from('class_chat_history')
       .select('class_id')
-      .eq('estudiante_id', studentId);
+      .in('estudiante_id', studentIdentifiers);
 
-    // 3. Fetch all intentos_examen for this student
+    // 3. Fetch all intentos_examen for this student (buscar por UUID y por Username)
     const { data: intentos } = await supabase
       .from('intentos_examen')
       .select('class_id')
-      .eq('estudiante_id', studentId);
+      .in('estudiante_id', studentIdentifiers);
 
     const geminiSet = new Set(geminiLessons?.map(gl => String(gl.class_id)) || []);
     const intentosSet = new Set(intentos?.map(i => String(i.class_id)) || []);
