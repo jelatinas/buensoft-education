@@ -184,6 +184,20 @@ const App: React.FC = () => {
   const handleLogin = async (user: User) => {
     setCurrentUser(user);
     localStorage.setItem('current_user', JSON.stringify(user));
+
+    // Guardar sesión compartida en cookie .buensoft.com y localStorage para el Hub y demás apps
+    const ssoData = {
+      email: user.email || '',
+      name: user.username,
+      username: user.username,
+      id: user.id || user.username
+    };
+    localStorage.setItem('buensoft_user', JSON.stringify(ssoData));
+    const rootDomain = window.location.hostname.includes('buensoft.com') ? '; domain=.buensoft.com' : '';
+    const secureAttr = window.location.protocol === 'https:' ? '; Secure' : '';
+    document.cookie = `buensoft_user=${encodeURIComponent(JSON.stringify(ssoData))}; path=/; max-age=${30 * 86400}${rootDomain}${secureAttr}; SameSite=Lax`;
+    localStorage.setItem('buensoft_login_event', String(Date.now()));
+
     if (user.role === Role.STUDENT) {
       await autoUpdateLessonStatuses(user.username);
       fetchUserBalance(user);
@@ -200,10 +214,51 @@ const App: React.FC = () => {
     setTotalBalance(0);
     setShowDuplicateModal(false);
     localStorage.removeItem('current_user');
+    localStorage.removeItem('buensoft_user');
+    localStorage.removeItem('games_user_name');
+
+    // Borrar cookie compartida .buensoft.com y del dominio actual
+    const rootDomain = window.location.hostname.includes('buensoft.com') ? '; domain=.buensoft.com' : '';
+    document.cookie = `buensoft_user=; path=/; max-age=0${rootDomain}`;
+    document.cookie = `buensoft_user=; path=/; max-age=0`;
+
+    // Notificar inmediatamente a las demás apps y al Hub principal
+    localStorage.setItem('buensoft_logout_event', String(Date.now()));
+
     if (sessionSubscriptionRef.current) {
       supabase.removeChannel(sessionSubscriptionRef.current);
     }
   };
+
+  // Escuchar cierre de sesión o cambio de cuenta global desde el Hub principal o cualquier otra app
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'buensoft_logout_event' || (e.key === 'buensoft_user' && !e.newValue)) {
+        if (currentUser) {
+          handleLogout();
+        }
+      } else if (e.key === 'buensoft_login_event' && !currentUser) {
+        window.location.reload();
+      }
+    };
+
+    const handleFocus = () => {
+      // Verificar si la cookie o el usuario fueron borrados mientras estaba en otra pestaña
+      const hasCookie = document.cookie.includes('buensoft_user=');
+      const hasLocal = !!localStorage.getItem('buensoft_user');
+      const hasCurrent = !!localStorage.getItem('current_user');
+      if (currentUser && !hasCookie && !hasLocal && !hasCurrent) {
+        handleLogout();
+      }
+    };
+
+    window.addEventListener('storage', handleStorageChange);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('storage', handleStorageChange);
+      window.removeEventListener('focus', handleFocus);
+    };
+  }, [currentUser]);
 
   const handleResumeHere = async () => {
     if (currentUser) {
