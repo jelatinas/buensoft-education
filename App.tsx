@@ -6,6 +6,7 @@ import { supabase } from './supabaseClient.ts';
 import Login from './components/Login.tsx';
 import AdminDashboard from './components/AdminDashboard.tsx';
 import StudentDashboard from './components/StudentDashboard.tsx';
+import EmailVerificationModal from './components/EmailVerificationModal.tsx';
 import { Lock, Sun, Moon, LogOut, Wallet, BookOpen, UserCircle2, Settings, Shield, GraduationCap, Coins, Palette } from 'lucide-react';
 import pkg from './package.json';
 
@@ -362,6 +363,20 @@ const App: React.FC = () => {
       )}
 
       {/* Password Update Modal */}
+
+      {/* Modal Obligatorio de Validación de Correo (Google o Resend) */}
+      {currentUser && currentUser.role === Role.STUDENT && (!currentUser.email || currentUser.email.trim() === '') && (
+        <EmailVerificationModal 
+          user={currentUser}
+          onVerified={(verifiedEmail) => {
+            const updated = { ...currentUser, email: verifiedEmail };
+            setCurrentUser(updated);
+            localStorage.setItem('current_user', JSON.stringify(updated));
+          }}
+          onLogout={handleLogout}
+        />
+      )}
+
       {showPasswordModal && (
         <div className="fixed inset-0 bg-indigo-900/80 backdrop-blur-md z-[1000] flex items-center justify-center p-4">
           <div className="bg-white dark:bg-indigo-900 p-8 rounded-[3rem] w-full max-w-md shadow-2xl border-8 border-indigo-50">

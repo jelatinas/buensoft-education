@@ -292,6 +292,21 @@ export const updateUser = async (originalUsername: string, updatedUser: User) =>
   if (error) throw error;
 };
 
+export const updateUserEmail = async (username: string, email: string): Promise<void> => {
+  const cleanEmail = email.trim().toLowerCase();
+  if (!cleanEmail) throw new Error("Correo electrónico inválido.");
+
+  const { error } = await supabase
+    .from('users')
+    .update({ email: cleanEmail })
+    .ilike('username', username);
+
+  if (error) {
+    console.error("Error al actualizar correo del usuario:", error);
+    throw error;
+  }
+};
+
 export const updateUserSession = async (username: string, sessionId: string | null) => {
   const { error } = await supabase.from('users').update({ current_session_id: sessionId }).eq('username', username);
   if (error) throw error;
