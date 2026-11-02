@@ -43,6 +43,7 @@ async function findLoginUser(identifier: string) {
   const result = identifier.includes('@')
     ? await query.ilike('email', identifier).maybeSingle()
     : await query.ilike('username', identifier).maybeSingle();
+  if (result.error) throw new Error(result.error.message);
   return result.data;
 }
 
