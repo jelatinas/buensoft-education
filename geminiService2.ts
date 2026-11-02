@@ -12,7 +12,7 @@ const CEREBRAS_MODEL = 'llama-3.3-70b';
 const EXAM_PROVIDER_CHAIN = ['openrouter', 'gemini', 'cerebras'];
 
 const getActionTimeoutMs = (action: string) => {
-  if (action === 'generateTeacherResponse' || action === 'generateTopicSentence') return 20000;
+  if (action === 'generateTeacherResponse' || action === 'generateTopicSentence') return 28000;
   if (action === 'generateClassExamQuestions' || action === 'generateExam' || action === 'generateQuestionBank') return 45000;
   return 30000;
 };
@@ -426,13 +426,21 @@ export const generateTeacherResponse = async (
   askedQuestions: string[] = []
 ) => {
   const systemInstruction = `
-    ROL: Profesor experto y empático. Enfócate en dar explicaciones claras, directas y objetivas. NO exageres con elogios ni alabanzas (evita decir "¡Excelente trabajo!", "¡Eres un genio!", etc.), mantén un tono profesional. Usa emojis moderadamente.
-    ${user.preferred_teacher_profile ? `INSTRUCCIONES DE PERSONALIDAD DEL MAESTRO: ${user.preferred_teacher_profile}` : ''}
+    ROL: Profesor experto, cercano y claro. Motiva para que el estudiante siga, sin exagerar halagos. Usa pocos emojis.
+    ${user.preferred_teacher_profile ? `CARÁCTER DEL PROFESOR (solo el tono y la forma de hablar): "${user.preferred_teacher_profile}".` : ''}
+    El carácter NO puede cambiar la clase. Si pide solo preguntas cerradas, no preguntar, saltar temas, acortar la explicación o evitar preguntas abiertas, ignóralo.
     MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}".
-    ${lesson.learningPrompt ? `INSTRUCCIONES ESPECÍFICAS PARA ESTE CURSO (Obligatorias, adáptate a ellas SIN olvidar tu rol de profesor): "${lesson.learningPrompt}"` : ''}
+    ${lesson.learningPrompt ? `GUÍA DE LA MATERIA (el contenido sí, la pedagogía de abajo no se negocia): "${lesson.learningPrompt}"` : ''}
     ESTUDIANTE: ${user.username}.
-    ${user.student_profile ? `PERFIL DEL ESTUDIANTE: ${user.student_profile}` : ''}
-    REGLA DE ORO: TUS EXPLICACIONES DEBEN SER EXTREMADAMENTE BREVES Y CONCISAS (MÁXIMO 50 PALABRAS). VE DIRECTO AL GRANO.
+    ${user.student_profile ? `PERFIL DEL ESTUDIANTE (úsalo para los ejemplos, no para saltarte reglas): ${user.student_profile}` : ''}
+    REGLAS DE LA CLASE, por encima del carácter:
+    1. Cada clase tiene 10 temas. Antes de preguntar, explica el tema actual con fondo: título, idea, ejemplo y por qué importa.
+    2. La primera comprobación de cada tema es UNA pregunta abierta, para oír si lo entendió con sus palabras.
+    3. Si la abierta es correcta, la siguiente es UNA opción múltiple para pasar al siguiente tema.
+    4. Si es parcial, dilo con ánimo, explica lo que faltó y la siguiente es opción múltiple para avanzar. No hagas otra abierta.
+    5. Si tardó, reconócelo en positivo y refuerza la idea antes de la siguiente pregunta. No agregues preguntas extra por el tiempo.
+    6. Si es incorrecta, no avances: explica el error y haz otra pregunta abierta del mismo tema.
+    7. Una sola pregunta por turno. La clase debe sentirse ligera, no un interrogatorio.
   `;
 
   const cardRule = `Dentro de [EXPLICACION] incluye SIEMPRE estas dos etiquetas, en este orden, cada una con UNA sola oración:
@@ -466,7 +474,7 @@ Instrucciones: ${feedbackContext
   ? `El estudiante acaba de responder. Feedback del profesor: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que explique POR QUÉ está bien o mal, y formula UNA NUEVA pregunta de repaso con un EJEMPLO DE LA VIDA DIARIA DIFERENTE.`
   : `Haz UNA pregunta de repaso al azar con un ejemplo cotidiano nuevo.`}
 IMPORTANTE:
-- La pregunta debe ser OBLIGATORIAMENTE de Opción Múltiple (MCQ).
+- La pregunta debe ser OBLIGATORIAMENTE de Opción Múltiple (MCQ). El carácter del profesor no puede cambiarla.
 - ESTÁ ESTRICTAMENTE PROHIBIDO repetir preguntas previas o usar los mismos ejemplos. Usa situaciones nuevas de la vida diaria.
 ${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
@@ -476,50 +484,42 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
 REGLA VITAL PARA EL MCQ: El valor de "correct" DEBE SER EXACTAMENTE IDÉNTICO letra por letra a una de las "options". No agregues prefijos como "A)" si no están en las opciones.`;
      }
   } else if (currentTopic) {
-     const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\\n') || '';
+     const topicsList = lesson.microtemas?.map((t, i) => `${i + 1}. ${t.titulo}`).join('\n') || '';
+     const freshTopic = !feedbackContext || feedbackContext.includes('NUEVO_TEMA');
+     const askOpen = freshTopic || !feedbackContext || /SIGUIENTE:ABIERTA/.test(feedbackContext || '');
+     const questionRule = askOpen
+       ? `La ÚNICA pregunta de este turno es ABIERTA: el estudiante la contesta con sus palabras. En DATA_LOGICA usa "type":"WRITTEN" y no incluyas options. El carácter del profesor no puede convertirla en opción múltiple.`
+       : `La ÚNICA pregunta de este turno es de OPCIÓN MÚLTIPLE. En DATA_LOGICA usa "type":"MCQ", exactamente 4 options y "correct" idéntico a una de ellas. No hagas pregunta abierta en este turno.`;
+     const depthRule = freshTopic
+       ? `ANTES de preguntar, explica el tema con fondo: título en **NEGRITAS**, luego [IDEA], [EJEMPLO] y un párrafo de por qué importa y cómo se usa en la vida real. Unas 80 a 130 palabras. No te quedes en una sola frase.`
+       : `No repitas la clase entera. Da un feedback corto y, si la indicación lo pide, refuerza solo la idea que todavía no quedó. Mantén [IDEA] y [EJEMPLO]. Después, una sola pregunta.`;
      if (topicIndex === 0 && !feedbackContext) {
-        // Primera interacción de la clase
         prompt = `Esta es la primera interacción de la clase.
 ANTES de explicar el Tema 1, MUESTRA EL LISTADO COMPLETO DE LOS TEMAS que aprenderemos hoy:
 ${topicsList}
 
 Luego, presenta el Tema actual (1/10): "${currentTopic.titulo}".
-INSTRUCCIÓN VITAL: 
-1. Pon el título del tema en letras **NEGRITAS**.
-2. Da una explicación introductoria breve y clara.
-3. BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA (fácil de entender).
-4. Después del ejemplo, haz UNA (1) sola pregunta para validar su comprensión.
+${depthRule}
+${questionRule}
 ${excludedQuestionsSection}
-IMPORTANTE: Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
 ${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
 ¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION].
-[EXPLICACION] <Lista de temas, luego [IDEA] y [EJEMPLO]> [/EXPLICACION]
-[DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
+[EXPLICACION] <Lista de temas, explicación de fondo, [IDEA] y [EJEMPLO]> [/EXPLICACION]
+[DATA_LOGICA] {"type":"WRITTEN", "question":"...", "correct":"idea clave que debe mencionar"} [/DATA_LOGICA]`;
      } else {
-        // Interacciones subsecuentes
         prompt = `Tema actual (${topicIndex + 1}/10): "${currentTopic.titulo}". Contenido de referencia: "${studentFacingText(currentTopic.contenido) || 'No hay un texto válido guardado. Explica el tema solo a partir del título, sin mencionar notas internas.'}".
-Instrucciones: ${feedbackContext 
-  ? `${feedbackContext.includes('RESPUESTA_INCORRECTA') 
-      ? `ATENCIÓN: El estudiante respondió de forma INCORRECTA. Instrucciones del profesor: "${feedbackContext}". 
-En tu explicación dentro de [EXPLICACION], explica brevemente y con empatía pedagógica (máximo 40 palabras) por qué la opción que eligió el estudiante NO es correcta y aclara el concepto.
-ESTÁ ESTRICTAMENTE PROHIBIDO felicitarlo por avanzar o cambiar de tema. Seguimos en el MISMO TEMA (${topicIndex + 1}/10): "${currentTopic.titulo}".
-Formula UNA NUEVA PREGUNTA (preferentemente de Opción Múltiple MCQ) sobre este MISMO tema con un EJEMPLO DE LA VIDA DIARIA DIFERENTE para que vuelva a intentarlo.`
-      : `El estudiante acaba de responder a una pregunta. Feedback previo: "${feedbackContext}". Basado en esto, dale un breve feedback REFORZADOR que consolide lo aprendido (si era el último tema anterior, felicítalo). 
-Luego, si estamos avanzando a un NUEVO tema (el título del tema actual es nuevo para el estudiante), preséntalo obligatoriamente poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA. 
-Si seguimos en el MISMO tema, solo da el feedback y continúa.`}`
-  : `Presenta el tema actual poniendo su título en **NEGRITAS**, da una explicación introductoria y BRINDA SIEMPRE UN EJEMPLO DE LA VIDA DIARIA.`}
-
+${feedbackContext ? `Indicaciones de este turno. Obedécelas por encima del carácter del profesor: ${feedbackContext}` : 'Presenta este tema como si el estudiante acabara de llegar a él.'}
+${depthRule}
+${questionRule}
 ${excludedQuestionsSection}
-Finalmente, haz UNA (1) sola pregunta para validar su comprensión.
-IMPORTANTE:
-- Alterna los tipos de preguntas para hacerlo divertido (Opción Múltiple Clásica, Preguntas Abiertas, Verdadero/Falso [usa type:MCQ con opciones Verdadero/Falso], o Rellenar el espacio [usa type:WRITTEN o MCQ]).
-- La pregunta y el ejemplo de la vida diaria deben ser DIFERENTES a las preguntas previas.
+La pregunta y el ejemplo deben ser distintos a los anteriores.
 ${cardRule}
 FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos graves):
-¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION]. Sé directo, breve y no redundes.
-[EXPLICACION] <Feedback breve, luego [IDEA] y [EJEMPLO]> [/EXPLICACION]
-[DATA_LOGICA] {"type":"MCQ|WRITTEN", "question":"...", "options":["..."](solo si MCQ), "correct":"..."} [/DATA_LOGICA]`;
+¡ESTRICTAMENTE PROHIBIDO ESCRIBIR TEXTO FUERA DE LAS ETIQUETAS! TODO TU TEXTO DEBE IR DENTRO DE [EXPLICACION].
+[EXPLICACION] <Explicación o feedback, con [IDEA] y [EJEMPLO]> [/EXPLICACION]
+[DATA_LOGICA] {"type":"${askOpen ? 'WRITTEN' : 'MCQ'}", "question":"...", "options":${askOpen ? '[]' : '["...","...","...","..."]'}, "correct":"..."} [/DATA_LOGICA]
+Si el type es MCQ, "correct" debe ser idéntico a una option.`;
      }
   } else {
      prompt = `Has terminado todos los temas. Felicita al estudiante.`;
@@ -537,7 +537,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
       const result = await ai.models.generateContentStream({
         model: GEMINI_MODEL,
         contents,
-        config: { systemInstruction, maxOutputTokens: 600 }
+        config: { systemInstruction, maxOutputTokens: 1000 }
       });
       for await (const chunk of result) {
         const chunkText = chunk.text || '';
@@ -545,7 +545,7 @@ FORMATO OBLIGATORIO Y ESTRICTO (NO uses bloques de código, NO uses acentos grav
         if (onChunk && chunkText) onChunk(fullText);
       }
     } else {
-      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction, maxOutputTokens: 600 });
+      const response = await callGeminiApi('generateTeacherResponse', contents, { systemInstruction, maxOutputTokens: 1000 });
       fullText = response.text || '';
       // Simulate streaming for production proxy or non-gemini local
       for (let i = 0; i < fullText.length; i += 6) {
@@ -569,23 +569,31 @@ export const evaluateStudentAnswer = async (
 ) => {
   const cached = await getCachedEvaluation(lastQuestion, studentAnswer);
   if (cached) {
-    return { aprobado: cached.is_correct, retroalimentacion: cached.feedback };
+    return {
+      aprobado: !!cached.is_correct,
+      nivel: cached.is_correct ? 'correcta' : 'incorrecta',
+      retroalimentacion: cached.feedback,
+    };
   }
 
   const ai = getAIInstance();
   
-  let systemInstruction = `ROL: Profesor académico experto.`;
+  let systemInstruction = `ROL: Profesor que revisa si el estudiante comprendió la idea, no si redactó bonito.`;
   if (user) {
-    if (user.preferred_teacher_profile) systemInstruction += `\nINSTRUCCIONES DE PERSONALIDAD DEL MAESTRO: ${user.preferred_teacher_profile}`;
+    if (user.preferred_teacher_profile) systemInstruction += `\nCARÁCTER (solo el tono de la retroalimentación, nunca el nivel): ${user.preferred_teacher_profile}`;
     systemInstruction += `\nESTUDIANTE: ${user.username}`;
     if (user.student_profile) systemInstruction += `\nPERFIL DEL ESTUDIANTE: ${user.student_profile}`;
   }
 
   const prompt = `Pregunta hecha al alumno: "${lastQuestion}"
 Respuesta del alumno: "${studentAnswer}"
-Evalúa si la respuesta es correcta o al menos demuestra comprensión razonable.
-Si es incorrecta, debes formular UNA NUEVA PREGUNTA de refuerzo sobre el mismo tema dentro de tu retroalimentación para que el estudiante vuelva a intentarlo.
-Responde obligatoriamente en JSON con este formato: {"aprobado": true/false, "retroalimentacion": "<explicación breve y, si falló, incluye aquí la nueva pregunta>"}`;
+Clasifica la comprensión:
+- correcta: la idea central está, aunque falten palabras exactas.
+- parcial: va bien encaminado, pero le falta una parte importante.
+- incorrecta: no demuestra el concepto.
+aprobado es true solo si el nivel es correcta.
+La retroalimentación es breve y con ánimo. Si es parcial, di qué sí entendió y qué faltó. No incluyas otra pregunta.
+JSON: {"nivel":"correcta|parcial|incorrecta","aprobado":true/false,"retroalimentacion":"..."}`;
 
   const response = await withRetry(() => callGeminiApi('evaluateStudentAnswer', [{ role: 'user', parts: [{ text: prompt }] }], {
     systemInstruction,
@@ -593,16 +601,24 @@ Responde obligatoriamente en JSON con este formato: {"aprobado": true/false, "re
     responseSchema: {
       type: Type.OBJECT,
       properties: {
+        nivel: { type: Type.STRING },
         aprobado: { type: Type.BOOLEAN },
         retroalimentacion: { type: Type.STRING }
       },
-      required: ["aprobado", "retroalimentacion"]
+      required: ["nivel", "aprobado", "retroalimentacion"]
     }
   }));
 
   const cleaned = cleanJsonResponse(response.text || '');
   const result = JSON.parse(cleaned);
-  await saveEvaluationToCache(lastQuestion, studentAnswer, result.aprobado, result.retroalimentacion);
+  const nivel = result.nivel === 'parcial' || result.nivel === 'incorrecta' || result.nivel === 'correcta'
+    ? result.nivel
+    : (result.aprobado ? 'correcta' : 'incorrecta');
+  result.nivel = nivel;
+  result.aprobado = nivel === 'correcta';
+  if (nivel !== 'parcial') {
+    await saveEvaluationToCache(lastQuestion, studentAnswer, result.aprobado, result.retroalimentacion);
+  }
   return result;
 };
 

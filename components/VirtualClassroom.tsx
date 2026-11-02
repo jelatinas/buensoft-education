@@ -132,6 +132,39 @@ export const checkMCQAnswer = (
   return false;
 };
 
+const SLOW_ANSWER_MS = 90_000;
+
+function questionKind(text: string): 'MCQ' | 'WRITTEN' | null {
+  const match = text.match(/\[DATA_LOGICA\]([\s\S]*?)\[\/DATA_LOGICA\]/);
+  if (!match) return null;
+  try {
+    const data = JSON.parse(match[1]);
+    if (data.type === 'MCQ' || (Array.isArray(data.options) && data.options.length > 1)) return 'MCQ';
+    return 'WRITTEN';
+  } catch {
+    return null;
+  }
+}
+
+function openAlreadyAccepted(messages: ChatMessage[]): boolean {
+  let start = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (/Tema\s+\d+\s+listo/i.test(messages[i].parts?.[0]?.text || '')) {
+      start = i + 1;
+      break;
+    }
+  }
+  const slice = messages.slice(start);
+  for (let i = 0; i < slice.length; i++) {
+    if (slice[i].role !== 'model') continue;
+    if (questionKind(slice[i].parts?.[0]?.text || '') !== 'WRITTEN') continue;
+    const answer = slice.slice(i + 1).find((message) => message.role === 'user');
+    if (!answer) continue;
+    if (answer.nivel === 'correcta' || answer.nivel === 'parcial' || answer.is_correct === true) return true;
+  }
+  return false;
+}
+
 const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClose, onLessonAccredited, isAdminAudit = false, isEmbedded = false }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState('');
@@ -723,63 +756,86 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         };
       } else {
         evalResult = await evaluateStudentAnswer(studentAnswer, lastQuestion, user);
-        // Attach reaction and feedback to the student's message
+        const writtenNivel = evalResult.nivel === 'parcial' || evalResult.nivel === 'incorrecta' || evalResult.nivel === 'correcta'
+          ? evalResult.nivel
+          : (evalResult.aprobado ? 'correcta' : 'incorrecta');
+        evalResult.nivel = writtenNivel;
+        const stamp = {
+          nivel: writtenNivel as 'correcta' | 'parcial' | 'incorrecta',
+          is_correct: writtenNivel === 'correcta' ? true : writtenNivel === 'incorrecta' ? false : undefined,
+          feedback: evalResult.retroalimentacion,
+        };
         setMessages(prev => {
           let uIdx = -1;
           for (let i = prev.length - 1; i >= 0; i--) {
             if (prev[i].role === 'user') { uIdx = i; break; }
           }
-          if (uIdx !== -1) {
-            const copy = [...prev];
-            copy[uIdx] = {
-              ...copy[uIdx],
-              is_correct: evalResult.aprobado,
-              feedback: evalResult.retroalimentacion
-            };
-            return copy;
-          }
-          return prev;
+          if (uIdx === -1) return prev;
+          const copy = [...prev];
+          copy[uIdx] = { ...copy[uIdx], ...stamp };
+          return copy;
         });
         let currUIdx = -1;
         for (let i = currentMessages.length - 1; i >= 0; i--) {
           if (currentMessages[i].role === 'user') { currUIdx = i; break; }
         }
         if (currUIdx !== -1) {
-          currentMessages[currUIdx] = {
-            ...currentMessages[currUIdx],
-            is_correct: evalResult.aprobado,
-            feedback: evalResult.retroalimentacion
-          };
+          currentMessages[currUIdx] = { ...currentMessages[currUIdx], ...stamp };
         }
       }
-      
-      if (evalResult.aprobado) {
-        newCorrectAnswers += 1;
-        setCombo(c => c + 1);
-        if (newCorrectAnswers >= 2) {
-          newCompletedTopics = Math.min(completedTopicsRef.current + 1, totalTopics);
-          newCorrectAnswers = 0;
-          isTopicCompleted = true;
-          setMood('party');
-        } else {
-          setMood('happy');
-        }
-      } else {
-        // Reset de aciertos del tema para asegurar que responda 2 correctas de este tema
-        newCorrectAnswers = 0;
+
+      const nivel: 'correcta' | 'parcial' | 'incorrecta' = mcqIsCorrect !== undefined
+        ? (mcqIsCorrect ? 'correcta' : 'incorrecta')
+        : (evalResult.nivel || (evalResult.aprobado ? 'correcta' : 'incorrecta'));
+      const lastIsOpen = questionKind(lastModelMessage?.parts?.[0]?.text || '') !== 'MCQ';
+      const askedAt = lastModelMessage?.timestamp ? new Date(lastModelMessage.timestamp).getTime() : 0;
+      const slow = askedAt > 0 && Date.now() - askedAt >= SLOW_ANSWER_MS;
+      const priorMessages = currentMessages[currentMessages.length - 1]?.role === 'user'
+        ? currentMessages.slice(0, -1)
+        : currentMessages;
+      const openBefore = openAlreadyAccepted(priorMessages);
+      const openAcceptedNow = openBefore || (lastIsOpen && (nivel === 'correcta' || nivel === 'parcial'));
+      const slowNote = slow
+        ? ' El estudiante se tomó su tiempo. Reconócelo en positivo y refuerza la idea central antes de la pregunta. No agregues preguntas extra por eso.'
+        : '';
+      const topicTitle = lesson.microtemas?.[completedTopicsRef.current < totalTopics ? completedTopicsRef.current : (totalTopics - 1)]?.titulo || lesson.title;
+
+      if (lastIsOpen && nivel === 'incorrecta') {
+        newCorrectAnswers = openBefore ? 1 : 0;
         setCombo(0);
         setMood('oops');
+        teacherContext = `[RESPUESTA_INCORRECTA][SIGUIENTE:ABIERTA] Respondió "${studentAnswer}" a "${lastQuestion}". No avances de tema. Seguimos en "${topicTitle}". Explica con calma qué no alcanzó y refuerza la idea. Luego UNA pregunta ABIERTA nueva, con otro ejemplo de la vida diaria.${slowNote}`;
+      } else if (lastIsOpen && nivel === 'parcial') {
+        newCorrectAnswers = 1;
+        setCombo(c => c + 1);
+        setMood('happy');
+        teacherContext = `[PARCIAL][SIGUIENTE:MCQ] La respuesta es PARCIAL. Dilo con ánimo: qué sí entendió y qué faltó ("${evalResult.retroalimentacion}"). Refuerza "${topicTitle}" sin repetir toda la clase. La ÚNICA pregunta siguiente es de opción múltiple, para poder avanzar. No hagas otra pregunta abierta.${slowNote}`;
+      } else if (lastIsOpen) {
+        newCorrectAnswers = 1;
+        setCombo(c => c + 1);
+        setMood('happy');
+        teacherContext = `[SIGUIENTE:MCQ] La respuesta abierta es correcta. ${evalResult.retroalimentacion || 'Feedback breve y positivo.'} Luego UNA opción múltiple de "${topicTitle}" para confirmar y avanzar. No hagas otra pregunta abierta.${slowNote}`;
+      } else if (nivel === 'correcta' && openAcceptedNow) {
+        newCorrectAnswers = 0;
+        newCompletedTopics = Math.min(completedTopicsRef.current + 1, totalTopics);
+        isTopicCompleted = true;
+        setCombo(c => c + 1);
+        setMood('party');
+        teacherContext = evalResult.retroalimentacion || 'La opción elegida fue la correcta.';
+      } else if (nivel === 'correcta') {
+        newCorrectAnswers = 0;
+        setCombo(c => c + 1);
+        setMood('happy');
+        teacherContext = `[SIGUIENTE:ABIERTA] Acertó la opción múltiple, pero este tema todavía no tuvo una pregunta abierta. Felicita en breve y haz UNA pregunta ABIERTA sobre "${topicTitle}". No avances de tema.${slowNote}`;
+      } else {
+        newCorrectAnswers = openBefore ? 1 : 0;
+        setCombo(0);
+        setMood('oops');
+        teacherContext = `[RESPUESTA_INCORRECTA][SIGUIENTE:MCQ] Eligió "${studentAnswer}" y la correcta era "${lastCorrect}". Explica por qué no era esa y aclara la idea de "${topicTitle}". Luego OTRA opción múltiple del mismo tema, con otro ejemplo. No vuelvas a una pregunta abierta.`;
       }
-      
+
       setCorrectAnswersForTopic(newCorrectAnswers);
       correctAnswersRef.current = newCorrectAnswers;
-
-      const currentTopicForContext = lesson.microtemas?.[newCompletedTopics < totalTopics ? newCompletedTopics : (totalTopics - 1)];
-      if (!evalResult.aprobado) {
-        teacherContext = `[RESPUESTA_INCORRECTA: El estudiante respondió "${studentAnswer}" a la pregunta: "${lastQuestion}". La respuesta correcta era: "${lastCorrect}". Explica de forma breve y pedagógica (máximo 40 palabras) por qué "${studentAnswer}" es incorrecta y aclara el concepto. NO avances al siguiente tema; seguimos en el MISMO tema: "${currentTopicForContext?.titulo}". Formula una NUEVA pregunta de Opción Múltiple (MCQ) sobre este MISMO tema con un EJEMPLO DE LA VIDA DIARIA DIFERENTE para que el estudiante vuelva a intentarlo].`;
-      } else {
-        teacherContext = evalResult.retroalimentacion;
-      }
     }
 
     if (isTopicCompleted) {
@@ -859,6 +915,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
 
     const topicAdvanced = isTopicCompleted && newCompletedTopics > previousTopics;
+    if (topicAdvanced && newCompletedTopics < totalTopics) {
+      teacherContext = `[NUEVO_TEMA][SIGUIENTE:ABIERTA] El tema anterior ya quedó. Presenta SOLO el tema nuevo con título en negritas, idea, ejemplo y explicación de fondo. Luego UNA pregunta ABIERTA. No hagas opción múltiple en este turno.`;
+    }
     if (topicAdvanced) {
       const finishedTopic = lesson.microtemas?.[newCompletedTopics - 1];
       const queued = preloadedMCQs[0];
@@ -909,7 +968,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
 
     // INSTANT PRELOADED MCQ CHECK - Solo si la respuesta fue correcta (si falló, la IA debe analizar el error)
-    if (mcqIsCorrect === true && !isReadyForExamNow && !isTopicCompleted) {
+    if (mcqIsCorrect === undefined && /\[SIGUIENTE:MCQ\]/.test(teacherContext) && !/PARCIAL|se tomó su tiempo/.test(teacherContext) && !isReadyForExamNow && !isTopicCompleted) {
        const askedList = getAskedQuestionsFromMessages(messages);
        const validPreloaded = preloadedMCQs.filter(q => !askedList.some(a => isSimilarQuestion(q.question, a)));
        if (validPreloaded.length > 0) {
@@ -918,7 +977,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
           setPreloadedMCQs(restMCQs);
           lastAskedMCQExplanationRef.current = nextMCQ.explanation;
           
-          const feedbackText = mcqIsCorrect ? `¡Correcto! ${teacherContext}` : `¡Incorrecto! ${teacherContext}`;
+          const feedbackText = 'Esa idea quedó. Confírmala con esta pregunta.';
           
           const localAiText = `[EXPLICACION] ${feedbackText} [/EXPLICACION]\n[DATA_LOGICA] ${JSON.stringify({
             type: 'MCQ',
@@ -1110,7 +1169,19 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   const renderMessage = (msg: ChatMessage, index: number) => {
     if (msg.role === 'user') {
-      const hasReaction = msg.is_correct !== undefined;
+      const nivel = msg.nivel || (msg.is_correct === true ? 'correcta' : msg.is_correct === false ? 'incorrecta' : undefined);
+      const hasReaction = nivel !== undefined;
+      const tone = nivel === 'parcial'
+        ? 'border-amber-400 text-amber-600 dark:text-amber-300 shadow-amber-500/20'
+        : nivel === 'correcta'
+          ? 'border-emerald-400 text-emerald-600 dark:text-emerald-400 shadow-emerald-500/20'
+          : 'border-rose-400 text-rose-600 dark:text-rose-400 shadow-rose-500/20';
+      const badge = nivel === 'parcial' ? '✨' : nivel === 'correcta' ? '👍' : '😢';
+      const box = nivel === 'parcial'
+        ? 'bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 text-amber-950 dark:text-amber-100'
+        : nivel === 'correcta'
+          ? 'bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
+          : 'bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200';
       return (
         <div key={index} className="flex flex-col items-end w-full mb-5">
           <div className="relative bg-indigo-600 text-white p-4 rounded-[2rem] rounded-tr-none max-w-[85%] sm:max-w-[75%] shadow-md">
@@ -1120,32 +1191,22 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                </ReactMarkdown>
              </div>
 
-             {/* WHATSAPP-STYLE REACTION BADGE */}
              {hasReaction && (
                <div 
-                 title={msg.is_correct ? "Respuesta correcta" : "Respuesta incorrecta"}
-                 className={`absolute -bottom-3.5 right-3 bg-white dark:bg-indigo-900 border-2 shadow-md rounded-full px-2 py-0.5 flex items-center gap-1 select-none transform transition-transform hover:scale-110 z-10 ${
-                   msg.is_correct 
-                     ? 'border-emerald-400 text-emerald-600 dark:text-emerald-400 shadow-emerald-500/20' 
-                     : 'border-rose-400 text-rose-600 dark:text-rose-400 shadow-rose-500/20'
-                 }`}
+                 title={nivel === 'parcial' ? 'Respuesta parcial' : nivel === 'correcta' ? 'Respuesta correcta' : 'Respuesta incorrecta'}
+                 className={`absolute -bottom-3.5 right-3 bg-white dark:bg-indigo-900 border-2 shadow-md rounded-full px-2 py-0.5 flex items-center gap-1 select-none transform transition-transform hover:scale-110 z-10 ${tone}`}
                >
-                 <span className="text-sm leading-none">{msg.is_correct ? '👍' : '😢'}</span>
+                 <span className="text-sm leading-none">{badge}</span>
                </div>
              )}
           </div>
 
-          {/* PEQUEÑO FEEDBACK SOBRE SU RESPUESTA */}
           {msg.feedback && (
-            <div className={`mt-2 flex items-start gap-2 px-3.5 py-2 rounded-2xl max-w-[85%] sm:max-w-[75%] text-xs font-bold shadow-sm ${
-              msg.is_correct
-                ? 'bg-emerald-50 dark:bg-emerald-950/60 border border-emerald-200 dark:border-emerald-800 text-emerald-900 dark:text-emerald-200'
-                : 'bg-rose-50 dark:bg-rose-950/60 border border-rose-200 dark:border-rose-800 text-rose-900 dark:text-rose-200'
-            }`}>
-              <span className="text-base leading-tight shrink-0">{msg.is_correct ? '👍' : '😢'}</span>
+            <div className={`mt-2 flex items-start gap-2 px-3.5 py-2 rounded-2xl max-w-[85%] sm:max-w-[75%] text-xs font-bold shadow-sm ${box}`}>
+              <span className="text-base leading-tight shrink-0">{badge}</span>
               <div className="flex-1">
                 <span className="text-[10px] uppercase font-black tracking-wider block opacity-75">
-                  {msg.is_correct ? 'Retroalimentación:' : 'Explicación:'}
+                  {nivel === 'parcial' ? 'Vas bien:' : nivel === 'correcta' ? 'Retroalimentación:' : 'Explicación:'}
                 </span>
                 <span className="leading-snug">{msg.feedback}</span>
               </div>
@@ -1226,7 +1287,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v2.8.19</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v3.0.1</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (

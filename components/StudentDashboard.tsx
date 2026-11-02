@@ -1132,7 +1132,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
         <div className="fixed inset-0 bg-indigo-900/80 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white dark:bg-indigo-950 w-full max-w-md rounded-[2.5rem] p-8 shadow-2xl animate-in fade-in zoom-in duration-200">
             <h3 className="text-xl font-black text-indigo-900 dark:text-white uppercase mb-4 text-center">Perfil del Estudiante</h3>
-            <p className="text-xs text-indigo-500 text-center mb-6 font-bold">Describe cómo eres y cómo te gustaría que fuera tu maestro para personalizar tus clases con IA.</p>
+            <p className="text-xs text-indigo-500 text-center mb-6 font-bold">Cuéntale al maestro cómo eres. Su personalidad cambia el tono, no la forma de la clase.</p>
             
             <div className="relative mb-4">
               <label className="text-[10px] uppercase font-bold text-indigo-400 mb-1 block">Acerca de ti</label>
@@ -1147,7 +1147,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
             <div className="relative mb-6">
               <label className="text-[10px] uppercase font-bold text-indigo-400 mb-1 block">Maestro Ideal</label>
               <textarea 
-                placeholder="¿Cómo te gustaría que fuera la personalidad de tu maestro de IA?"
+                placeholder="Solo el carácter: más serio, más bromista, más calmado. No cambia las preguntas ni los temas."
                 className="w-full bg-orange-50 dark:bg-orange-900/30 border-2 border-orange-100 dark:border-orange-800 rounded-2xl px-5 py-3 text-sm font-bold text-orange-900 dark:text-white focus:outline-none focus:border-orange-400 min-h-[100px] resize-none"
                 value={teacherProfile}
                 onChange={(e) => setTeacherProfile(e.target.value)}

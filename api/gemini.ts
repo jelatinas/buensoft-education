@@ -71,7 +71,7 @@ export default async function handler(req: any, res: any) {
       }
 
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), action === 'generateTeacherResponse' ? 20000 : 45000);
+      const timeoutId = setTimeout(() => controller.abort(), action === 'generateTeacherResponse' ? 28000 : 45000);
       let aiRes;
       try {
         aiRes = await fetch(endpoint, {
