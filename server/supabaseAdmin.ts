@@ -1,6 +1,6 @@
-import { createClient, SupabaseClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js';
 
-let client: SupabaseClient | null = null;
+let client: ReturnType<typeof createClient> | null = null;
 
 function isJwt(value: string) {
   return value.split('.').length === 3;
