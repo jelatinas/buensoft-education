@@ -201,11 +201,7 @@ function readCount(response) {
 function encodeFilterValue(value) {
   if (value === null || value === void 0) return "null";
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  const text = String(value);
-  if (text !== "" && /^[A-Za-z0-9_-]+$/.test(text)) return text;
-  const reserved = /[,"():]/.test(text);
-  const literal = reserved ? `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"` : text;
-  return encodeURIComponent(literal).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+  return encodeURIComponent(String(value)).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 function isJwt(value) {
   return value.split(".").length === 3;
