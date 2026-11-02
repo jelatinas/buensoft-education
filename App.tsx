@@ -1,8 +1,7 @@
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, Role } from './types.ts';
-import { initStorage, autoUpdateLessonStatuses, updateUser, updateUserSession, getAccountBalance, ensureUserRecordExists } from './storage2.ts';
-import { supabase } from './supabaseClient.ts';
+import { initStorage, autoUpdateLessonStatuses, updateUserSession, getAccountBalance, restoreSession, getOwnAccountSnapshot, logoutSession, changeOwnPassword } from './storage2.ts';
 import Login from './components/Login.tsx';
 import AdminDashboard from './components/AdminDashboard.tsx';
 import StudentDashboard from './components/StudentDashboard.tsx';
@@ -23,7 +22,6 @@ const App: React.FC = () => {
 
   const [tabSessionId] = useState(() => Math.random().toString(36).substring(2, 15));
   const [showDuplicateModal, setShowDuplicateModal] = useState(false);
-  const sessionSubscriptionRef = useRef<any>(null);
 
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [currentPass, setCurrentPass] = useState('');
@@ -51,124 +49,44 @@ const App: React.FC = () => {
     }
   };
 
-  const setupSessionListener = (username: string) => {
-    if (sessionSubscriptionRef.current) {
-      supabase.removeChannel(sessionSubscriptionRef.current);
-    }
-
-    const channel = supabase
-      .channel(`user-session-${username}`)
-      .on(
-        'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'users',
-          filter: `username=eq.${username}`
-        },
-        (payload) => {
-          const remoteSessionId = payload.new.current_session_id;
-          if (remoteSessionId && remoteSessionId !== tabSessionId) {
-            setShowDuplicateModal(true);
-          }
-        }
-      )
-      .subscribe();
-    
-    sessionSubscriptionRef.current = channel;
-  };
-
-  // Escucha de cambios en tiempo real en la tabla USERS para el balance
   useEffect(() => {
-    if (currentUser && currentUser.role === Role.STUDENT) {
-      const filter = currentUser.id 
-        ? `id=eq.${currentUser.id}` 
-        : `username=eq.${currentUser.username}`;
-
-      const channel = supabase
-        .channel(`user-balance-changes-${currentUser.username}`)
-        .on(
-          'postgres_changes',
-          {
-            event: 'UPDATE',
-            schema: 'public',
-            table: 'users',
-            filter: filter
-          },
-          (payload) => {
-            // Si el balance cambió, actualizamos el estado local
-            if (payload.new && typeof payload.new.balance !== 'undefined') {
-              setTotalBalance(Number(payload.new.balance));
-            }
-          }
-        )
-        .subscribe();
-
-      return () => {
-        supabase.removeChannel(channel);
-      };
-    }
-  }, [currentUser]);
+    if (!currentUser || currentUser.role !== Role.STUDENT) return;
+    let stopped = false;
+    const tick = async () => {
+      const snapshot = await getOwnAccountSnapshot();
+      if (stopped || !snapshot) return;
+      setTotalBalance(snapshot.balance);
+      if (snapshot.current_session_id && snapshot.current_session_id !== tabSessionId) {
+        setShowDuplicateModal(true);
+      }
+    };
+    const timer = window.setInterval(tick, 8000);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [currentUser, tabSessionId]);
 
   useEffect(() => {
     const loadApp = async () => {
       await initStorage();
-      let user: User | null = null;
-      const storedUser = localStorage.getItem('current_user');
-      if (storedUser) {
-        user = JSON.parse(storedUser);
-      } else {
-        // Revisar si existe sesión compartida de Google SSO (.buensoft.com)
-        const match = document.cookie.match(/(?:^|;\s*)buensoft_user=([^;]*)/);
-        if (match) {
-          try {
-            const ssoData = JSON.parse(decodeURIComponent(match[1]));
-            if (ssoData && ssoData.email) {
-              const username = ssoData.email.split('@')[0];
-              user = {
-                id: ssoData.sub || ssoData.id || username,
-                username: username,
-                role: Role.STUDENT,
-                email: ssoData.email
-              };
-              localStorage.setItem('current_user', JSON.stringify(user));
-            }
-          } catch (e) {
-            console.warn('Error leyendo buensoft_user cookie:', e);
-          }
-        }
-      }
-
+      const user = await restoreSession();
       if (user) {
-        try {
-          const dbUser = await ensureUserRecordExists(user.username, user.email);
-          user = {
-            ...user,
-            id: dbUser.id || user.id,
-            username: dbUser.username || user.username,
-            role: dbUser.role || user.role
-          };
-          localStorage.setItem('current_user', JSON.stringify(user));
-        } catch (e) {
-          console.warn("Error sincronizando usuario:", e);
+        const safeUser = { ...user };
+        delete safeUser.password;
+        localStorage.setItem('current_user', JSON.stringify(safeUser));
+        setCurrentUser(safeUser);
+        if (safeUser.role === Role.STUDENT) {
+          await autoUpdateLessonStatuses(safeUser.username);
+          fetchUserBalance(safeUser);
+          updateUserSession(safeUser.username, tabSessionId);
         }
-        setCurrentUser(user);
-        if (user.role === Role.STUDENT) {
-          await autoUpdateLessonStatuses(user.username);
-          fetchUserBalance(user);
-          setupSessionListener(user.username);
-          updateUserSession(user.username, tabSessionId);
-        }
+      } else {
+        localStorage.removeItem('current_user');
       }
       setIsInitializing(false);
     };
     loadApp();
-
-    return () => {
-      if (sessionSubscriptionRef.current) {
-        supabase.removeChannel(sessionSubscriptionRef.current);
-      }
-    };
   }, []);
 
   useEffect(() => {
@@ -182,8 +100,10 @@ const App: React.FC = () => {
   }, [theme]);
 
   const handleLogin = async (user: User) => {
-    setCurrentUser(user);
-    localStorage.setItem('current_user', JSON.stringify(user));
+    const safeUser = { ...user };
+    delete safeUser.password;
+    setCurrentUser(safeUser);
+    localStorage.setItem('current_user', JSON.stringify(safeUser));
 
     // Guardar sesión compartida en cookie .buensoft.com y localStorage para el Hub y demás apps
     const ssoData = {
@@ -198,11 +118,10 @@ const App: React.FC = () => {
     document.cookie = `buensoft_user=${encodeURIComponent(JSON.stringify(ssoData))}; path=/; max-age=${30 * 86400}${rootDomain}${secureAttr}; SameSite=Lax`;
     localStorage.setItem('buensoft_login_event', String(Date.now()));
 
-    if (user.role === Role.STUDENT) {
-      await autoUpdateLessonStatuses(user.username);
-      fetchUserBalance(user);
-      setupSessionListener(user.username);
-      await updateUserSession(user.username, tabSessionId);
+    if (safeUser.role === Role.STUDENT) {
+      await autoUpdateLessonStatuses(safeUser.username);
+      fetchUserBalance(safeUser);
+      await updateUserSession(safeUser.username, tabSessionId);
     }
   };
 
@@ -224,10 +143,7 @@ const App: React.FC = () => {
 
     // Notificar inmediatamente a las demás apps y al Hub principal
     localStorage.setItem('buensoft_logout_event', String(Date.now()));
-
-    if (sessionSubscriptionRef.current) {
-      supabase.removeChannel(sessionSubscriptionRef.current);
-    }
+    logoutSession().catch(console.error);
   };
 
   // Escuchar cierre de sesión o cambio de cuenta global desde el Hub principal o cualquier otra app
@@ -272,10 +188,6 @@ const App: React.FC = () => {
     setPassError('');
     if (!currentUser) return;
     
-    if (currentPass !== currentUser.password) {
-      setPassError('La contraseña actual es incorrecta.');
-      return;
-    }
     if (newPass.length < 4 || newPass.length > 8) {
       setPassError('La nueva contraseña debe tener entre 4 y 8 caracteres.');
       return;
@@ -287,17 +199,18 @@ const App: React.FC = () => {
 
     setIsUpdatingPass(true);
     try {
-      const updatedUser: User = { ...currentUser, password: newPass };
-      await updateUser(currentUser.username, updatedUser);
-      setCurrentUser(updatedUser);
-      localStorage.setItem('current_user', JSON.stringify(updatedUser));
+      await changeOwnPassword(currentPass, newPass);
+      const safeUser = { ...currentUser };
+      delete safeUser.password;
+      setCurrentUser(safeUser);
+      localStorage.setItem('current_user', JSON.stringify(safeUser));
       setShowPasswordModal(false);
       setCurrentPass('');
       setNewPass('');
       setConfirmPass('');
       alert('¡Contraseña actualizada con éxito!');
-    } catch (err) {
-      setPassError('Error al actualizar. Intenta más tarde.');
+    } catch (err: any) {
+      setPassError(err?.message || 'No se pudo actualizar la contraseña.');
     } finally {
       setIsUpdatingPass(false);
     }

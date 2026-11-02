@@ -1,7 +1,7 @@
 ﻿
 import { User, Role, StudentData, Lesson, SubjectGuide, Transaction, Pregunta, OpcionPregunta, IntentoExamen, RespuestaEstudiante, GeminiLessonHistory, ClassExamQuestion } from './types.ts';
-import { supabase } from './supabaseClient.ts';
-import { hashPassword, verifyPassword, isHashedPassword } from './cryptoUtils.ts';
+import { supabase, authRequest } from './remoteSupabase.ts';
+import { hashPassword, isHashedPassword } from './cryptoUtils.ts';
 
 // --- UTILIDADES DE VALIDACIÓN DE TIPOS ---
 
@@ -148,63 +148,59 @@ export const executeStudentTransfer = async (fromId: string, toId: string, amoun
 export const authenticateUser = async (username: string, passwordInput: string): Promise<User | null> => {
   const cleanUsername = username.trim();
   if (!cleanUsername || !passwordInput) return null;
+  const result = await authRequest({ action: 'login', username: cleanUsername, password: passwordInput });
+  return result?.ok ? result.user : null;
+};
 
-  // 1. Consultar ÚNICAMENTE el registro del usuario solicitado (jamás todos los usuarios)
-  // 1. Consultar ÚNICAMENTE el registro del usuario solicitado (por username o por correo)
-  let userQuery = supabase
-    .from('users')
-    .select('id, username, password, email, role, student_profile, preferred_teacher_profile');
-
-  const { data: targetUser, error } = cleanUsername.includes('@')
-    ? await userQuery.ilike('email', cleanUsername).maybeSingle()
-    : await userQuery.ilike('username', cleanUsername).maybeSingle();
-
-  if (error || !targetUser) {
+export const restoreSession = async (): Promise<User | null> => {
+  try {
+    const result = await authRequest({ action: 'session' });
+    return result?.ok ? result.user : null;
+  } catch {
     return null;
   }
+};
 
-  // 2. Verificar contraseña del usuario
-  let verifyResult = await verifyPassword(passwordInput, targetUser.password);
-
-  // 3. Si no coincide, verificar si es la contraseña maestra del Administrador
-  if (!verifyResult.isValid) {
-    const { data: adminUser } = await supabase
-      .from('users')
-      .select('password')
-      .eq('role', 'ADMIN')
-      .maybeSingle();
-
-    if (adminUser) {
-      const adminVerify = await verifyPassword(passwordInput, adminUser.password);
-      if (adminVerify.isValid) {
-        verifyResult = { isValid: true, needsUpgrade: false };
-      }
-    }
-  }
-
-  if (!verifyResult.isValid) {
+export const getOwnAccountSnapshot = async (): Promise<{ balance: number; current_session_id: string | null } | null> => {
+  try {
+    const result = await authRequest({ action: 'session' });
+    if (!result?.ok) return null;
+    return {
+      balance: Number(result.balance || 0),
+      current_session_id: result.current_session_id || null,
+    };
+  } catch {
     return null;
   }
+};
 
-  // 4. Si la contraseña aún estaba en texto plano, migrarla automáticamente a hash SHA-256 seguro
-  if (verifyResult.needsUpgrade && targetUser.id) {
-    try {
-      const newHash = await hashPassword(passwordInput);
-      await supabase.from('users').update({ password: newHash }).eq('id', targetUser.id);
-      targetUser.password = newHash;
-    } catch (upgradeErr) {
-      console.warn("No se pudo auto-migrar la contraseña a hash:", upgradeErr);
-    }
+export const logoutSession = async () => {
+  try {
+    await authRequest({ action: 'logout' });
+  } catch {
+    // La cookie se limpia en el servidor; si no responde, el cliente igual sale.
   }
+};
 
-  return targetUser;
+export const changeOwnPassword = async (currentPassword: string, newPassword: string) => {
+  await authRequest({ action: 'change-password', currentPassword, newPassword });
+};
+
+export const requestPasswordReset = async (email: string) => {
+  return authRequest({ action: 'send-recovery', email });
+};
+
+export const confirmPasswordReset = async (email: string, code: string, newPassword: string): Promise<User> => {
+  const result = await authRequest({ action: 'reset-password', email, code, newPassword });
+  if (!result?.ok || !result.user) throw new Error(result?.error || 'No se pudo restablecer la contraseña.');
+  return result.user;
 };
 
 // Obtener usuarios públicos para paneles de estudiantes (NUNCA incluye la columna password)
 export const getPublicUsers = async (): Promise<Omit<User, 'password'>[]> => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, username, email, role, student_profile, preferred_teacher_profile');
+    .select('id, username, role, student_profile, preferred_teacher_profile');
   return error ? [] : (data || []);
 };
 
@@ -233,13 +229,11 @@ export const ensureUserRecordExists = async (username: string, email?: string): 
     return existing;
   }
 
-  // 2. Si no existe, insertarlo en la base de datos
-  const passwordHash = await hashPassword('123456');
+  // 2. Si no existe, insertarlo. El servidor asigna una contraseña aleatoria.
   const { data: created, error: insertError } = await supabase
     .from('users')
     .insert([{
       username: cleanUsername,
-      password: passwordHash,
       role: Role.STUDENT,
       email: email || null,
       balance: 0
@@ -304,7 +298,7 @@ export const findUserByEmail = async (email: string): Promise<User | null> => {
 
   const { data, error } = await supabase
     .from('users')
-    .select('id, username, email, role, password')
+    .select('id, username, email, role')
     .ilike('email', cleanEmail)
     .maybeSingle();
 
@@ -319,19 +313,11 @@ export const resetUserPassword = async (username: string, newPassword: string): 
   if (!newPassword || newPassword.length < 4) {
     throw new Error('La contraseña debe tener al menos 4 caracteres.');
   }
-
-  const cleanUsername = username.trim();
-  const newHash = await hashPassword(newPassword);
-
   const { error } = await supabase
     .from('users')
-    .update({ password: newHash })
-    .ilike('username', cleanUsername);
-
-  if (error) {
-    console.error("Error al restablecer contraseña:", error);
-    throw error;
-  }
+    .update({ password: newPassword })
+    .ilike('username', username.trim());
+  if (error) throw error;
 };
 
 export const updateUserEmail = async (username: string, email: string): Promise<void> => {
@@ -1347,116 +1333,21 @@ export const getDemoLessonDates = (startDateStr?: string): string[] => {
 /**
  * Inicia sesión o registra un estudiante automáticamente con Google SSO
  */
-export const loginOrRegisterWithGoogle = async (googleEmail: string, name?: string, sub?: string): Promise<User> => {
-  const cleanEmail = googleEmail.trim().toLowerCase();
-  
-  // 1. Buscar si algún usuario ya tiene este correo
-  const { data: userByEmail } = await supabase
-    .from('users')
-    .select('*')
-    .ilike('email', cleanEmail)
-    .maybeSingle();
-
-  if (userByEmail) {
-    return userByEmail;
-  }
-
-  // 2. Si no, buscar por username derivado del email
-  const baseUsername = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '');
-  const { data: userByName } = await supabase
-    .from('users')
-    .select('*')
-    .ilike('username', baseUsername)
-    .maybeSingle();
-
-  if (userByName) {
-    await supabase.from('users').update({ email: cleanEmail }).eq('id', userByName.id);
-    return { ...userByName, email: cleanEmail };
-  }
-
-  // 3. Crear nuevo usuario en Supabase con este correo y username
-  const passwordHash = await hashPassword('123456');
-  const { data: created, error } = await supabase
-    .from('users')
-    .insert([{
-      username: baseUsername,
-      password: passwordHash,
-      role: Role.STUDENT,
-      email: cleanEmail,
-      balance: 0
-    }])
-    .select()
-    .single();
-
-  if (error || !created) {
-    console.error("Error al registrar usuario con Google:", error);
-    const fallbackUsername = `${baseUsername}_${Math.floor(100 + Math.random() * 900)}`;
-    const { data: createdFallback, error: err2 } = await supabase
-      .from('users')
-      .insert([{
-        username: fallbackUsername,
-        password: passwordHash,
-        role: Role.STUDENT,
-        email: cleanEmail,
-        balance: 0
-      }])
-      .select()
-      .single();
-    if (err2 || !createdFallback) throw error || err2;
-    return createdFallback;
-  }
-
-  return created;
+export const loginOrRegisterWithGoogle = async (credential: string): Promise<User> => {
+  const result = await authRequest({ action: 'google', credential });
+  if (!result?.user) throw new Error('No se pudo entrar con Google.');
+  return result.user;
 };
 
 export const registerStudent = async (username: string, password?: string, email?: string): Promise<User> => {
-  const cleanUsername = username.trim().toLowerCase();
-  const cleanEmail = email ? email.trim().toLowerCase() : undefined;
-  if (!cleanUsername) throw new Error('El nombre de usuario es requerido.');
-  if (cleanUsername.length < 3) throw new Error('El nombre de usuario debe tener al menos 3 caracteres.');
-
-  // Verificar si ya existe el usuario
-  const { data: existing } = await supabase
-    .from('users')
-    .select('username')
-    .ilike('username', cleanUsername)
-    .maybeSingle();
-
-  if (existing) {
-    throw new Error('Ese nombre de usuario ya está registrado. Por favor elige otro.');
-  }
-
-  // Verificar si el correo ya está registrado
-  if (cleanEmail) {
-    const { data: existingEmail } = await supabase
-      .from('users')
-      .select('username')
-      .ilike('email', cleanEmail)
-      .maybeSingle();
-    if (existingEmail) {
-      throw new Error('Ese correo electrónico ya está asociado a otra cuenta.');
-    }
-  }
-
-  const passwordHash = await hashPassword(password || '123456');
-  const { data: newUser, error } = await supabase
-    .from('users')
-    .insert([{
-      username: cleanUsername,
-      password: passwordHash,
-      email: cleanEmail || null,
-      role: Role.STUDENT,
-      balance: 0
-    }])
-    .select()
-    .single();
-
-  if (error || !newUser) {
-    console.error("Error al registrar estudiante:", error);
-    throw error || new Error("No se pudo registrar el estudiante.");
-  }
-
-  return newUser;
+  const result = await authRequest({
+    action: 'register',
+    username,
+    password: password || '',
+    email: email || '',
+  });
+  if (!result?.user) throw new Error(result?.error || 'No se pudo registrar el estudiante.');
+  return result.user;
 };
 
 /**

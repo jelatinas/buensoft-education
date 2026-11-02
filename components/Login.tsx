@@ -4,8 +4,8 @@ import {
   authenticateUser, 
   registerStudent, 
   loginOrRegisterWithGoogle, 
-  findUserByEmail, 
-  resetUserPassword 
+  requestPasswordReset,
+  confirmPasswordReset
 } from '../storage2';
 import pkg from '../package.json';
 
@@ -70,27 +70,11 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
           throw new Error("No se recibió credencial de Google.");
         }
 
-        const base64Url = response.credential.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const jsonPayload = decodeURIComponent(atob(base64).split('').map((c) => {
-          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-        }).join(''));
+        const authenticatedUser = await loginOrRegisterWithGoogle(response.credential);
 
-        const payload = JSON.parse(jsonPayload);
-        const googleEmail = payload.email?.toLowerCase().trim();
-
-        if (!googleEmail) {
-          throw new Error("Google no devolvió un correo válido.");
-        }
-
-        const authenticatedUser = await loginOrRegisterWithGoogle(googleEmail, payload.name, payload.sub);
-
-        // Guardar sesión SSO en cookie .buensoft.com
         const ssoData = {
-          email: googleEmail,
-          name: payload.name || authenticatedUser.username,
-          sub: payload.sub,
-          picture: payload.picture,
+          email: authenticatedUser.email || '',
+          name: authenticatedUser.username,
           linked_username: authenticatedUser.username
         };
         const expires = new Date();
@@ -276,39 +260,23 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
     setIsLoading(true);
     try {
-      const foundUser = await findUserByEmail(cleanEmail);
-      if (!foundUser) {
-        setError('No encontramos ninguna cuenta registrada con este correo.');
+      const data = await requestPasswordReset(cleanEmail);
+      if (!data?.ok) {
+        setError(data?.error || 'No encontramos ninguna cuenta registrada con este correo.');
         return;
       }
 
-      setForgotUsername(foundUser.username);
-      const generated = Math.floor(100000 + Math.random() * 900000).toString();
-
-      const response = await fetch('/api/send-code', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: cleanEmail,
-          username: foundUser.username,
-          code: generated,
-          type: 'recovery'
-        })
-      });
-
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Error al enviar código provisional.');
-
-      setSentPin(generated);
+      setForgotUsername(data.username);
+      setSentPin('sent');
       setPinExpiresAt(Date.now() + 15 * 60 * 1000);
       setResendCooldown(60);
       setForgotStep('code');
 
       if (data.simulated && data.devCode) {
         setForgotCode(data.devCode);
-        setInfoMessage(`🔔 Código provisional para pruebas: ${data.devCode}`);
+        setInfoMessage(`Código provisional para pruebas: ${data.devCode}`);
       } else {
-        setInfoMessage(`✅ Código provisional enviado a ${cleanEmail}.`);
+        setInfoMessage(`Código enviado a ${cleanEmail}.`);
       }
     } catch (err: any) {
       setError(err?.message || 'Error al procesar la recuperación de cuenta.');
@@ -332,8 +300,8 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
       return;
     }
 
-    if (forgotCode.trim() !== sentPin) {
-      setError('El código ingresado es incorrecto.');
+    if (!forgotCode.trim()) {
+      setError('Escribe el código que enviamos a tu correo.');
       return;
     }
 
@@ -349,8 +317,7 @@ const Login: React.FC<LoginProps> = ({ onLogin }) => {
 
     setIsLoading(true);
     try {
-      await resetUserPassword(forgotUsername, newPassword);
-      const authenticatedUser = await authenticateUser(forgotUsername, newPassword);
+      const authenticatedUser = await confirmPasswordReset(forgotEmail.trim().toLowerCase(), forgotCode.trim(), newPassword);
       if (authenticatedUser) {
         onLogin(authenticatedUser);
       } else {

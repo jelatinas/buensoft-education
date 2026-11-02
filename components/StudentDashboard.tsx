@@ -258,7 +258,13 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
     setIsTransferring(true);
     try {
-      await executeCreditTransfer(user.id || user.username, realSum, pending.map(l => String(l.id)));
+      await executeCreditTransfer(
+        user.id || user.username,
+        user.username,
+        realSum,
+        'Créditos de lecciones aprobadas',
+        pending.map(l => String(l.id))
+      );
       await fetchData();
       if (onBalanceUpdate) onBalanceUpdate();
       alert("¡Transferencia completada!");
