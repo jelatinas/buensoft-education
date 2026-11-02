@@ -62,7 +62,7 @@ class RestQuery implements PromiseLike<{ data: any; error: { message: string } |
     const list = (value || []).map((item) => encodeFilterValue(item)).join(',');
     return this.add(`${column}=in.(${list})`);
   }
-  or(value: string) { return this.add(`or=(${value})`); }
+  or(value: string) { return this.add(`or=${encodeURIComponent(`(${value})`)}`); }
   not(column: string, operator: string, value: unknown) {
     return this.add(`${column}=not.${operator}.${encodeFilterValue(value)}`);
   }
@@ -88,15 +88,11 @@ class RestQuery implements PromiseLike<{ data: any; error: { message: string } |
 
   private async run() {
     const { url, key } = requireConfig();
-    const params = new URLSearchParams();
-    params.set('select', this.columns);
-    if (this.orderBy) params.set('order', this.orderBy);
-    if (this.maxRows != null) params.set('limit', String(this.maxRows));
-    if (this.conflict) params.set('on_conflict', this.conflict);
-    for (const filter of this.filters) {
-      const splitAt = filter.indexOf('=');
-      params.append(filter.slice(0, splitAt), filter.slice(splitAt + 1));
-    }
+    const params = [`select=${encodeURIComponent(this.columns)}`];
+    if (this.orderBy) params.push(`order=${encodeURIComponent(this.orderBy)}`);
+    if (this.maxRows != null) params.push(`limit=${encodeURIComponent(String(this.maxRows))}`);
+    if (this.conflict) params.push(`on_conflict=${encodeURIComponent(this.conflict)}`);
+    for (const filter of this.filters) params.push(filter);
 
     const headers: Record<string, string> = {
       apikey: key,
@@ -106,7 +102,7 @@ class RestQuery implements PromiseLike<{ data: any; error: { message: string } |
     if (this.prefer.size) headers.Prefer = Array.from(this.prefer).join(',');
     if (this.payload !== undefined) headers['Content-Type'] = 'application/json';
 
-    const response = await fetch(`${url}/rest/v1/${this.table}?${params.toString()}`, {
+    const response = await fetch(`${url}/rest/v1/${this.table}?${params.join('&')}`, {
       method: this.headOnly ? 'HEAD' : this.method,
       headers,
       body: this.payload === undefined || this.headOnly ? undefined : JSON.stringify(this.payload),
@@ -151,8 +147,9 @@ function encodeFilterValue(value: unknown) {
   if (value === null || value === undefined) return 'null';
   if (typeof value === 'number' || typeof value === 'boolean') return String(value);
   const text = String(value);
-  if (text !== '' && /^[a-zA-Z0-9_\-]+$/.test(text)) return text;
-  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  if (text !== '' && /^[A-Za-z0-9_-]+$/.test(text)) return text;
+  const quoted = `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  return encodeURIComponent(quoted);
 }
 
 function isJwt(value: string) {

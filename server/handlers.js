@@ -116,7 +116,7 @@ var RestQuery = class {
     return this.add(`${column}=in.(${list})`);
   }
   or(value) {
-    return this.add(`or=(${value})`);
+    return this.add(`or=${encodeURIComponent(`(${value})`)}`);
   }
   not(column, operator, value) {
     return this.add(`${column}=not.${operator}.${encodeFilterValue(value)}`);
@@ -146,15 +146,11 @@ var RestQuery = class {
   }
   async run() {
     const { url, key } = requireConfig();
-    const params = new URLSearchParams();
-    params.set("select", this.columns);
-    if (this.orderBy) params.set("order", this.orderBy);
-    if (this.maxRows != null) params.set("limit", String(this.maxRows));
-    if (this.conflict) params.set("on_conflict", this.conflict);
-    for (const filter of this.filters) {
-      const splitAt = filter.indexOf("=");
-      params.append(filter.slice(0, splitAt), filter.slice(splitAt + 1));
-    }
+    const params = [`select=${encodeURIComponent(this.columns)}`];
+    if (this.orderBy) params.push(`order=${encodeURIComponent(this.orderBy)}`);
+    if (this.maxRows != null) params.push(`limit=${encodeURIComponent(String(this.maxRows))}`);
+    if (this.conflict) params.push(`on_conflict=${encodeURIComponent(this.conflict)}`);
+    for (const filter of this.filters) params.push(filter);
     const headers = {
       apikey: key,
       Accept: "application/json"
@@ -162,7 +158,7 @@ var RestQuery = class {
     if (isJwt(key)) headers.Authorization = `Bearer ${key}`;
     if (this.prefer.size) headers.Prefer = Array.from(this.prefer).join(",");
     if (this.payload !== void 0) headers["Content-Type"] = "application/json";
-    const response = await fetch(`${url}/rest/v1/${this.table}?${params.toString()}`, {
+    const response = await fetch(`${url}/rest/v1/${this.table}?${params.join("&")}`, {
       method: this.headOnly ? "HEAD" : this.method,
       headers,
       body: this.payload === void 0 || this.headOnly ? void 0 : JSON.stringify(this.payload)
@@ -206,8 +202,9 @@ function encodeFilterValue(value) {
   if (value === null || value === void 0) return "null";
   if (typeof value === "number" || typeof value === "boolean") return String(value);
   const text = String(value);
-  if (text !== "" && /^[a-zA-Z0-9_\-]+$/.test(text)) return text;
-  return `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  if (text !== "" && /^[A-Za-z0-9_-]+$/.test(text)) return text;
+  const quoted = `"${text.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  return encodeURIComponent(quoted);
 }
 function isJwt(value) {
   return value.split(".").length === 3;
