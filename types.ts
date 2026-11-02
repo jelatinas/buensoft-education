@@ -60,6 +60,7 @@ export interface Lesson {
   elapsedSeconds?: number;
   completedTopicsCount?: number;
   grade?: number;
+  bonusCredits?: number;
   examResults?: any[];
   learningPrompt?: string;
   chatHistory?: ChatMessage[];

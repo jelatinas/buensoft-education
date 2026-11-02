@@ -207,6 +207,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [mcqSelections, setMcqSelections] = useState<Record<number, { selected: string; correct: string }>>({});
   const [combo, setCombo] = useState(0);
   const [gameScore, setGameScore] = useState(0);
+  const [sessionBonus, setSessionBonus] = useState(0);
+  const sessionBonusRef = useRef(0);
   const [winStreak, setWinStreak] = useState(0);
   const [scoreBurst, setScoreBurst] = useState<{ id: number; amount: number } | null>(null);
   const [mood, setMood] = useState<MascotMood>('idle');
@@ -1287,7 +1289,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v3.0.1</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v3.0.2</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
@@ -1437,6 +1439,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         stars={correctAnswersForTopic}
         combo={combo}
         score={gameScore}
+        sessionBonus={sessionBonus}
         mood={mood}
         winStreak={winStreak}
         scoreBurst={scoreBurst}
@@ -1475,6 +1478,10 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                  setActiveGame(null);
                  setWinStreak(current => won ? current + 1 : 0);
                  setGameScore(s => s + points);
+                 if (won) {
+                   sessionBonusRef.current = Math.min(10, sessionBonusRef.current + 1);
+                   setSessionBonus(sessionBonusRef.current);
+                 }
                  setScoreBurst({ id: Date.now(), amount: points });
                  window.setTimeout(() => setScoreBurst(null), 900);
                  setMood(won ? 'happy' : 'oops');
@@ -1553,7 +1560,12 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                 const finalTopics = isPassed ? Math.max(completedTopicsRef.current, totalTopics) : completedTopicsRef.current;
                 const finalSeconds = Math.max(secondsRef.current, lesson.elapsedSeconds || 0);
 
+                const sessionBonusCount = sessionBonusRef.current;
+                const savedBonus = isPassed
+                  ? Math.max(sessionBonusCount, Number(lesson.bonusCredits) || 0)
+                  : (lesson.bonusCredits || 0);
                 lesson.grade = grade;
+                lesson.bonusCredits = savedBonus;
                 lesson.completed = isPassed;
                 lesson.lesson_status = isPassed ? 'Aprobada' : 'Reprobada';
                 lesson.completedTopicsCount = finalTopics;
@@ -1564,6 +1576,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                    await updateLessonInStudent(user.username, {
                      ...lesson, 
                      grade,
+                     bonusCredits: isPassed ? savedBonus : undefined,
                      completedTopicsCount: finalTopics,
                      elapsedSeconds: finalSeconds,
                      actualDurationMinutes: Math.ceil(finalSeconds / 60),

@@ -167,6 +167,16 @@ export async function authorizeTable(session: SessionUser, query: TableQuery) {
   }
 
   if (table === 'student_lessons') {
+    if ((action === 'update' || action === 'upsert') && !isAdmin(session)) {
+      for (const row of rowsOf(query.values)) {
+        if (row.bonus_credits == null) continue;
+        const bonus = Math.floor(Number(row.bonus_credits));
+        const grade = Number(row.grade);
+        const approved = row.completed === true || row.lesson_status === 'Aprobada' || row.lesson_status === 'Completada' || grade >= 6;
+        if (!approved || !Number.isFinite(bonus) || bonus <= 0) delete row.bonus_credits;
+        else row.bonus_credits = Math.min(10, bonus);
+      }
+    }
     if (action === 'select' && query.returning === 'questions') return;
     if (isAdmin(session)) return;
     const owner = ownerFilter(query, 'student_username');

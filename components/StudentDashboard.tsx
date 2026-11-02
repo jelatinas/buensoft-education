@@ -222,7 +222,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   }, [data, weekStart]);
 
   const creditsTransferable = useMemo(() => {
-    return currentWeekLessons.filter(l => (l.lesson_status === 'Aprobada' || l.lesson_status === 'Completada' || (l.grade && l.grade >= 6)) && !l.credits_transfered).reduce((acc, l) => acc + (l.grade || 0), 0);
+    return currentWeekLessons.filter(l => (l.lesson_status === 'Aprobada' || l.lesson_status === 'Completada' || (l.grade && l.grade >= 6)) && !l.credits_transfered).reduce((acc, l) => acc + (l.grade || 0) + (l.bonusCredits || 0), 0);
   }, [currentWeekLessons]);
 
   const creditsToWin = useMemo(() => {
@@ -253,7 +253,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
     });
     if (hasIncomplete) { alert("Debes completar todas tus clases asignadas hasta el día de hoy antes de transferir créditos."); return; }
     const pending = currentWeekLessons.filter(l => (l.lesson_status === 'Aprobada' || l.lesson_status === 'Completada' || (l.grade && l.grade >= 6)) && !l.credits_transfered);
-    const realSum = pending.reduce((acc, l) => acc + (l.grade || 0), 0);
+    const realSum = pending.reduce((acc, l) => acc + (l.grade || 0) + (l.bonusCredits || 0), 0);
     if (!window.confirm(`¿Confirmas transferencia de $${realSum}?`)) return;
 
     setIsTransferring(true);
@@ -730,7 +730,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                         </div>
                         <div className="bg-indigo-50/50 dark:bg-indigo-900/30 p-2 rounded-2xl border border-indigo-100/50 flex flex-col justify-center">
                           <p className="text-[8px] font-black text-indigo-400 uppercase leading-none mb-1">Créditos</p>
-                          <p className="text-[10px] font-black text-indigo-900 dark:text-white">{lesson.grade || 0}/10</p>
+                          <p className="text-[10px] font-black text-indigo-900 dark:text-white">{lesson.grade || 0}/10{(lesson.bonusCredits || 0) > 0 ? ` +${lesson.bonusCredits} bono` : ''}</p>
                         </div>
                       </div>
 

@@ -401,6 +401,7 @@ export const getStudentData = async (username: string): Promise<StudentData | nu
       actualDurationMinutes: row.actual_duration_minutes, 
       completedTopicsCount: row.valid_interactions_count || 0,
       grade: row.grade,
+      bonusCredits: Number(row.bonus_credits) || 0,
       learningPrompt: row.learning_prompt,
       credits_transfered: row.credits_transfered,
       lesson_status: row.lesson_status,
@@ -428,6 +429,7 @@ export const clearLessonChatHistory = async (studentId: string, lesson: Lesson) 
     actual_duration_minutes: 0,
     valid_interactions_count: 0,
     grade: null,
+    bonus_credits: 0,
     completed: false,
     lesson_status: 'Pendiente'
   };
@@ -475,6 +477,7 @@ export const clearStudentLessonData = async (studentId: string, studentUsername:
     actual_duration_minutes: 0,
     valid_interactions_count: 0,
     grade: 5,
+    bonus_credits: 0,
     completed: false,
     lesson_status: 'Reprobada'
   };
@@ -549,7 +552,17 @@ export const updateLessonInStudent = async (username: string, updatedLesson: Les
     learning_prompt: cleanPrompt
   };
 
+  if (isApproved && Number(updatedLesson.bonusCredits) > 0) {
+    updateData.bonus_credits = Math.min(10, Math.floor(Number(updatedLesson.bonusCredits)));
+  }
+
   const { error } = await supabase.from('student_lessons').update(updateData).eq('id', lessonId);
+  if (error && updateData.bonus_credits != null && String(error.message || '').toLowerCase().includes('bonus_credits')) {
+    delete updateData.bonus_credits;
+    const retry = await supabase.from('student_lessons').update(updateData).eq('id', lessonId);
+    if (retry.error) throw retry.error;
+    return;
+  }
   if (error) throw error;
 };
 

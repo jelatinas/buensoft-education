@@ -9,12 +9,13 @@ type ClassroomHudProps = {
   stars: number;
   combo: number;
   score: number;
+  sessionBonus?: number;
   mood: MascotMood;
   winStreak: number;
   scoreBurst: ScoreBurst | null;
 };
 
-export default function ClassroomHud({ completedTopics, stars, combo, score, mood, winStreak, scoreBurst }: ClassroomHudProps) {
+export default function ClassroomHud({ completedTopics, stars, combo, score, sessionBonus = 0, mood, winStreak, scoreBurst }: ClassroomHudProps) {
   const current = Math.min(completedTopics, 9);
   const topicLabel = completedTopics >= 10 ? '10 de 10 temas vistos' : `Tema ${completedTopics + 1} de 10`;
   const goalPercent = Math.min(100, Math.round((score / CLASS_GOAL) * 100));
@@ -28,7 +29,7 @@ export default function ClassroomHud({ completedTopics, stars, combo, score, moo
           <div className="flex items-center justify-between gap-2 mb-1">
             <p className="text-[10px] font-black uppercase tracking-widest text-indigo-100">{topicLabel}</p>
             <p className="relative text-[10px] font-black text-amber-200">
-              {score} / {CLASS_GOAL}
+              {score} / {CLASS_GOAL}{sessionBonus > 0 ? ` · +${sessionBonus} bono` : ''}
               {scoreBurst && (
                 <span key={scoreBurst.id} className="score-fly absolute -top-1 right-0 text-xs text-amber-200">
                   +{scoreBurst.amount}

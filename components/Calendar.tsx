@@ -163,7 +163,7 @@ const Calendar: React.FC<CalendarProps> = ({
           const isToday = todayStr === dateStr;
           const isSelected = selectedDate === dateStr;
           const status = getSchoolDayStatus(dateStr);
-          const dailyCredits = dayLessons.reduce((acc, curr) => acc + (curr.grade || 0), 0);
+          const dailyCredits = dayLessons.reduce((acc, curr) => acc + (curr.grade || 0) + (curr.bonusCredits || 0), 0);
 
           let dayClasses = `min-h-[140px] md:min-h-[160px] border-r border-indigo-50 dark:border-indigo-800 p-2 last:border-r-0 cursor-pointer transition-all relative `;
           
@@ -200,7 +200,7 @@ const Calendar: React.FC<CalendarProps> = ({
                       </div>
                       {grade !== null && (
                         <div className="flex items-center justify-end mt-0.5 space-x-1 border-t border-white/10 pt-0.5">
-                          <span className="text-[7px]">Créditos: {grade}/10</span>
+                          <span className="text-[7px]">Créditos: {grade}/10{(lesson.bonusCredits || 0) > 0 ? ` +${lesson.bonusCredits} bono` : ''}</span>
                         </div>
                       )}
                     </div>
