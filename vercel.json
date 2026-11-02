@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/auth.ts": {
+      "includeFiles": "server/handlers.js"
+    },
+    "api/data.ts": {
+      "includeFiles": "server/handlers.js"
+    }
+  }
+}

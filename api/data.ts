@@ -1,7 +1,6 @@
-import { handleData } from '../server/http.ts';
-
 export default async function handler(req: any, res: any) {
   try {
+    const { handleData } = await import('../server/handlers.js');
     return await handleData(req, res);
   } catch (error: any) {
     const body = JSON.stringify({ error: error?.message || 'Error del servidor' });
