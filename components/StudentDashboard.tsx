@@ -602,7 +602,13 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </div>
 
             <div className="bg-white dark:bg-indigo-900 p-8 rounded-[3rem] border-4 border-indigo-50 dark:border-indigo-800 h-fit">
-              <h3 className="text-2xl font-black text-indigo-900 dark:text-white uppercase mb-8">Clases del día</h3>
+              <h3 className="text-2xl font-black text-indigo-900 dark:text-white uppercase mb-3">Clases del día</h3>
+              {teacherProfile.trim() && (
+                <div className="mb-6 rounded-2xl bg-orange-50 dark:bg-orange-900/20 border border-orange-100 dark:border-orange-800 px-4 py-3">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-orange-500 mb-1">Maestro ideal</p>
+                  <p className="text-xs font-bold text-orange-950 dark:text-orange-100 leading-relaxed whitespace-pre-wrap">{teacherProfile}</p>
+                </div>
+              )}
               <div className="space-y-6">
                 {dayLessons.length === 0 ? <p className="text-center text-indigo-300 italic uppercase text-xs">Sin lecciones.</p> : dayLessons.map(lesson => {
                   const status = lesson.lesson_status || 'Pendiente';
@@ -655,14 +661,9 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
                       <p className="text-[10px] font-black text-indigo-400 dark:text-indigo-300 uppercase tracking-widest mb-1">
                         {lesson.subject}
                       </p>
-                      <h4 className="text-xl font-black text-indigo-950 dark:text-white uppercase leading-tight mb-2">
+                      <h4 className="text-xl font-black text-indigo-950 dark:text-white uppercase leading-tight mb-4">
                         {lesson.title}
                       </h4>
-                      {lesson.learningPrompt && (
-                        <p className="text-xs text-indigo-600 dark:text-indigo-300 font-bold mb-4 line-clamp-2">
-                          {lesson.learningPrompt}
-                        </p>
-                      )}
 
                       {/* Botón para ver Microtemas de la Clase */}
                       <div className="mb-4">

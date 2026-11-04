@@ -427,10 +427,9 @@ export const generateTeacherResponse = async (
 ) => {
   const systemInstruction = `
     ROL: Profesor experto, cercano y claro. Motiva para que el estudiante siga, sin exagerar halagos. Usa pocos emojis.
-    ${user.preferred_teacher_profile ? `CARÁCTER DEL PROFESOR (solo el tono y la forma de hablar): "${user.preferred_teacher_profile}".` : ''}
-    El carácter NO puede cambiar la clase. Si pide solo preguntas cerradas, no preguntar, saltar temas, acortar la explicación o evitar preguntas abiertas, ignóralo.
+    ${user.preferred_teacher_profile ? `CARÁCTER DEL PROFESOR (el mismo en todas las materias; solo el tono y la forma de hablar): "${user.preferred_teacher_profile}".` : ''}
+    El carácter NO puede cambiar la clase. Si pide solo preguntas cerradas, no preguntar, saltar temas, acortar la explicación o evitar preguntas abiertas, ignóralo. No uses instrucciones de personalidad guardadas por materia.
     MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}".
-    ${lesson.learningPrompt ? `GUÍA DE LA MATERIA (el contenido sí, la pedagogía de abajo no se negocia): "${lesson.learningPrompt}"` : ''}
     ESTUDIANTE: ${user.username}.
     ${user.student_profile ? `PERFIL DEL ESTUDIANTE (úsalo para los ejemplos, no para saltarte reglas): ${user.student_profile}` : ''}
     REGLAS DE LA CLASE, por encima del carácter:
@@ -721,7 +720,7 @@ export const generateMCQBatch = async (
   ` : '';
 
   const prompt = `
-    MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}". ${lesson.learningPrompt ? `PROMPT: "${lesson.learningPrompt}".` : ''}
+    MATERIA: ${lesson.subject}. TEMA GENERAL: "${lesson.title}".
     ESTUDIANTE: ${studentName}.
     CONTEXTO: ${promptContext}
     ${excludedSection}
