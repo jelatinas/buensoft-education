@@ -30,7 +30,12 @@ export default async function handler(req: any, res: any) {
       if (!apiKey) return res.status(500).json({ error: `${provider.toUpperCase()}_API_KEY is not configured.` });
       
       const endpoint = isOpenrouter ? 'https://openrouter.ai/api/v1/chat/completions' : 'https://api.cerebras.ai/v1/chat/completions';
-      const model = isOpenrouter ? 'google/gemini-3.5-flash-lite' : 'llama-3.3-70b';
+      const openRouterFreeModels = [
+        'google/gemma-4-26b-a4b-it:free',
+        'google/gemma-4-31b-it:free',
+        'openrouter/free',
+      ];
+      const model = isOpenrouter ? openRouterFreeModels[0] : 'llama-3.3-70b';
       
       // Convert Gemini contents to OpenAI messages
       const messages: any[] = [];
@@ -61,6 +66,7 @@ export default async function handler(req: any, res: any) {
         messages,
         temperature,
       };
+      if (isOpenrouter) body.models = openRouterFreeModels;
 
       if (payload.config?.responseMimeType === 'application/json') {
          body.response_format = { type: 'json_object' };

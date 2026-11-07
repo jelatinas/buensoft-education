@@ -7,7 +7,13 @@ export const getAiProvider = () => typeof window !== 'undefined' ? (sessionStora
 export const setAiProvider = (provider: string) => typeof window !== 'undefined' && sessionStorage.setItem('selected_ai_provider', provider);
 
 const GEMINI_MODEL = 'gemini-3.5-flash-lite';
-const OPENROUTER_MODEL = 'google/gemini-3.5-flash-lite';
+// Solo variantes :free y el router gratuito. Un respaldo de pago sí se cobra.
+const OPENROUTER_FREE_MODELS = [
+  'google/gemma-4-26b-a4b-it:free',
+  'google/gemma-4-31b-it:free',
+  'openrouter/free',
+];
+const OPENROUTER_MODEL = OPENROUTER_FREE_MODELS[0];
 const CEREBRAS_MODEL = 'llama-3.3-70b';
 const EXAM_PROVIDER_CHAIN = ['openrouter', 'gemini', 'cerebras'];
 
@@ -321,6 +327,7 @@ const callGeminiApi = async (action: string, contents: any[], config: any, provi
             temperature: temp,
             response_format: config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined
         };
+        if (isOpenrouter) bodyConfig.models = OPENROUTER_FREE_MODELS;
         if (config?.maxOutputTokens) {
             bodyConfig.max_tokens = config.maxOutputTokens;
         }
@@ -1127,6 +1134,7 @@ export const generateQuestionsForMicrotemas = async (subject: string, lessonTitl
           let authHeader = `Bearer ${fallbackKey?.trim()}`;
           let requestBody: any = {
             model: OPENROUTER_MODEL,
+            models: OPENROUTER_FREE_MODELS,
             messages: [
               { role: "system", content: systemInstruction },
               { role: "user", content: prompt + "\n\nResponde SOLO con el JSON estructurado según las reglas." }

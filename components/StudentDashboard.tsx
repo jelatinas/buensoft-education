@@ -536,7 +536,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
             className="px-3 py-2 bg-indigo-50 dark:bg-indigo-950 text-indigo-600 dark:text-indigo-300 rounded-xl text-[10px] md:text-xs font-black uppercase border-2 border-indigo-100 dark:border-indigo-800 outline-none"
           >
             <option value="gemini">Gemini</option>
-            <option value="openrouter">OpenRouter (Auto)</option>
+            <option value="openrouter">OpenRouter (Gratis)</option>
             <option value="cerebras">Llama 3.1 8B</option>
           </select>
           <button onClick={() => setShowProfileSettings(true)} className="px-3 py-2 rounded-xl font-black text-[10px] md:text-xs uppercase text-indigo-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
