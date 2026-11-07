@@ -327,8 +327,10 @@ const callGeminiApi = async (action: string, contents: any[], config: any, provi
             temperature: temp,
             response_format: config?.responseMimeType === 'application/json' ? { type: 'json_object' } : undefined
         };
-        if (isOpenrouter) bodyConfig.models = OPENROUTER_FREE_MODELS;
-        if (config?.maxOutputTokens) {
+        if (isOpenrouter) {
+            bodyConfig.reasoning = { effort: 'none' };
+            bodyConfig.max_tokens = Math.max(config?.maxOutputTokens || 1200, 1200);
+        } else if (config?.maxOutputTokens) {
             bodyConfig.max_tokens = config.maxOutputTokens;
         }
         
@@ -346,7 +348,10 @@ const callGeminiApi = async (action: string, contents: any[], config: any, provi
         
         if (!aiRes.ok) throw new Error(`API Error ${aiRes.status}: ${await aiRes.text()}`);
         const data = await aiRes.json();
-        return { text: data.choices?.[0]?.message?.content || '' };
+        const content = data.choices?.[0]?.message?.content;
+        const text = typeof content === 'string' ? content : '';
+        if (!text.trim()) throw new Error('API Error: el modelo respondió vacío.');
+        return { text };
       }
     } else {
       const res = await fetch('/api/gemini', {
@@ -359,7 +364,9 @@ const callGeminiApi = async (action: string, contents: any[], config: any, provi
          const errorData = await res.json().catch(() => ({}));
          throw new Error(errorData.error || `API Error: ${res.statusText}`);
       }
-      return await res.json();
+      const data = await res.json();
+      if (!String(data?.text || '').trim()) throw new Error('API Error: el modelo respondió vacío.');
+      return data;
     }
   } catch (err: any) {
     if (err?.name === 'AbortError' || String(err).includes('AbortError')) {

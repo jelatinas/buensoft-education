@@ -61,48 +61,68 @@ export default async function handler(req: any, res: any) {
         if (isOpenrouter) temperature = 0.1;
       }
 
-      const body: any = {
-        model,
-        messages,
-        temperature,
-      };
-      if (isOpenrouter) body.models = openRouterFreeModels;
+      const wantsJson = payload.config?.responseMimeType === 'application/json';
+      const requestedTokens = payload.config?.maxOutputTokens || (wantsJson ? 2000 : 1200);
+      const attempts = isOpenrouter
+        ? [
+            { model: openRouterFreeModels[0], reasoning: { effort: 'none' }, maxTokens: requestedTokens },
+            { model: openRouterFreeModels[1], reasoning: { effort: 'none' }, maxTokens: requestedTokens },
+            { model: openRouterFreeModels[2], reasoning: { effort: 'low' }, maxTokens: Math.max(requestedTokens, 4000) },
+          ]
+        : [{ model, reasoning: undefined as any, maxTokens: payload.config?.maxOutputTokens }];
 
-      if (payload.config?.responseMimeType === 'application/json') {
-         body.response_format = { type: 'json_object' };
-      }
-      
-      if (payload.config?.maxOutputTokens) {
-         body.max_tokens = payload.config.maxOutputTokens;
-      }
+      const visibleText = (message: any): string => {
+        const content = message?.content;
+        if (typeof content === 'string' && content.trim()) return content;
+        if (Array.isArray(content)) {
+          const joined = content.map((part: any) => (typeof part === 'string' ? part : part?.text || '')).join('');
+          if (joined.trim()) return joined;
+        }
+        return '';
+      };
 
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), action === 'generateTeacherResponse' ? 28000 : 45000);
-      let aiRes;
+      let lastError = 'OpenRouter no devolvió texto.';
       try {
-        aiRes = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${apiKey}`,
-            'HTTP-Referer': 'https://buensoft.com',
-            'X-Title': 'Buensoft Education'
-          },
-          body: JSON.stringify(body),
-          signal: controller.signal
-        });
+        for (const attempt of attempts) {
+          const body: any = {
+            model: attempt.model,
+            messages,
+            temperature,
+          };
+          if (attempt.reasoning) body.reasoning = attempt.reasoning;
+          if (wantsJson) body.response_format = { type: 'json_object' };
+          if (attempt.maxTokens) body.max_tokens = attempt.maxTokens;
+
+          const aiRes = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${apiKey}`,
+              'HTTP-Referer': 'https://buensoft.com',
+              'X-Title': 'Buensoft Education'
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal
+          });
+
+          if (!aiRes.ok) {
+            lastError = `API Error ${aiRes.status}: ${await aiRes.text()}`;
+            continue;
+          }
+
+          const data = await aiRes.json();
+          const text = visibleText(data.choices?.[0]?.message);
+          const cutOff = data.choices?.[0]?.finish_reason === 'length' && text.trim().length < 80;
+          if (text.trim() && !cutOff) return res.status(200).json({ text });
+          lastError = 'El modelo gratuito respondió vacío.';
+        }
       } finally {
         clearTimeout(timeoutId);
       }
-      
-      if (!aiRes.ok) {
-        const errText = await aiRes.text();
-        throw new Error(`API Error ${aiRes.status}: ${errText}`);
-      }
-      
-      const data = await aiRes.json();
-      const text = data.choices?.[0]?.message?.content || '';
-      return res.status(200).json({ text });
+
+      throw new Error(lastError);
     }
     
     return res.status(400).json({ error: 'Unknown provider' });
