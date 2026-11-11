@@ -161,7 +161,7 @@ const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const fetchData = async () => {
     setIsLoading(true);
     try {
-      if (!isAdminView) await autoUpdateLessonStatuses(user.username);
+      await autoUpdateLessonStatuses(user.username);
       const ownerId = user.id || user.username;
       const [studentData, history, balance, allUsers, allCourses] = await Promise.all([
         getStudentData(user.username),

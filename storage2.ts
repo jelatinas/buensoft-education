@@ -28,41 +28,77 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
   return 'Pendiente';
 };
 
-export const autoUpdateLessonStatuses = async (username: string) => {
+export const auditAndSanitizeStudentLessons = async (username: string) => {
   try {
+    const cleanUsername = username.trim().toLowerCase();
     const { data: lessons, error } = await supabase
       .from('student_lessons')
       .select('*')
-      .ilike('student_username', username);
+      .ilike('student_username', cleanUsername);
 
     if (error || !lessons || lessons.length === 0) return;
 
-    const mappedLessons: Lesson[] = lessons.map(row => ({
-      id: row.id.toString(),
-      subject: row.subject,
-      title: row.topic,
-      durationMinutes: row.duration_minutes,
-      completed: row.completed,
-      date: row.date,
-      elapsedSeconds: row.elapsed_seconds || 0,
-      actualDurationMinutes: row.actual_duration_minutes,
-      completedTopicsCount: row.valid_interactions_count || 0,
-      grade: row.grade,
-      bonusCredits: Number(row.bonus_credits) || 0,
-      credits_transfered: row.credits_transfered,
-      lesson_status: row.lesson_status,
-    }));
+    // Obtener identificadores posibles del estudiante (username y UUID si existe)
+    const studentIdents = [cleanUsername];
+    try {
+      const { data: uData } = await supabase.from('users').select('id').ilike('username', cleanUsername).limit(1);
+      if (uData && uData.length > 0 && uData[0].id) {
+        studentIdents.push(String(uData[0].id).toLowerCase());
+      }
+    } catch (_) {}
 
-    const auditMap = await getAuditStatusesBulk(username, username, mappedLessons);
+    // Traer todos los chats de este estudiante
+    const { data: allChats } = await supabase
+      .from('class_chat_history')
+      .select('class_id, chat_history')
+      .in('estudiante_id', studentIdents);
 
-    for (const l of mappedLessons) {
-      const audit = auditMap[l.id];
-      const isClaimedApproved = l.lesson_status === 'Aprobada' || l.lesson_status === 'Completada' || l.completed || (l.grade != null && l.grade >= 6);
-      const hasRealAudit = audit && audit.hasGeminiLesson && audit.hasExamAttempts;
+    // Traer todos los intentos de examen con calificación >= 6
+    const { data: allIntentos } = await supabase
+      .from('intentos_examen')
+      .select('id, class_id, calificacion')
+      .in('estudiante_id', studentIdents)
+      .gte('calificacion', 6);
 
-      // REGLA ESTRICTA: Las clases que no tengan historial de clase tomada y examen no pueden estar completadas
-      if (isClaimedApproved && !hasRealAudit) {
-        console.warn(`[Auditoría Estricta] Revertiendo lección sin historial ni examen verificado: ID ${l.id} (${l.title}) para ${username}`);
+    const chatClassIdSet = new Set(
+      (allChats || [])
+        .filter(c => c.chat_history && String(c.chat_history).trim() !== '' && String(c.chat_history).trim() !== '[]')
+        .map(c => String(c.class_id))
+    );
+    const intentoClassIdSet = new Set((allIntentos || []).map(i => String(i.class_id)));
+
+    // Mapear courses y classes para resolver class_id si la lección no usó lesson.id
+    const subjects = Array.from(new Set(lessons.map(l => l.subject || 'General')));
+    const { data: materias } = await supabase.from('courses').select('id, nombre').in('nombre', subjects);
+    const materiaMap = new Map((materias || []).map(m => [String(m.nombre).toLowerCase(), m.id]));
+    const materiaIds = Array.from(materiaMap.values());
+
+    let classMap = new Map();
+    if (materiaIds.length > 0) {
+      const { data: classes } = await supabase.from('classes').select('id, titulo, course_id').in('course_id', materiaIds);
+      (classes || []).forEach(c => {
+        classMap.set(`${c.course_id}_${String(c.titulo).trim().toLowerCase()}`, String(c.id));
+      });
+    }
+
+    for (const row of lessons) {
+      const isClaimedApproved = row.completed === true || row.lesson_status === 'Aprobada' || row.lesson_status === 'Completada' || (row.grade != null && Number(row.grade) >= 6);
+      if (!isClaimedApproved) continue;
+
+      const topic = String(row.topic || '');
+      const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
+      const lessonNumber = (match ? match[1] : topic).trim().toLowerCase();
+      const materiaId = materiaMap.get(String(row.subject || 'General').toLowerCase());
+      const resolvedClassId = materiaId ? (classMap.get(`${materiaId}_${lessonNumber}`) || classMap.get(`${materiaId}_${topic.toLowerCase()}`)) : null;
+
+      const candidateIds = [String(row.id), resolvedClassId ? String(resolvedClassId) : null].filter(Boolean);
+
+      const hasChat = candidateIds.some(id => chatClassIdSet.has(id));
+      const hasExam = candidateIds.some(id => intentoClassIdSet.has(id));
+
+      // Si afirma estar aprobada pero no tiene historial de clase O no tiene examen aprobado:
+      if (!hasChat || !hasExam) {
+        console.warn(`[Auditoría Estricta] Revertiendo lección sin historial ni examen verificado: ID ${row.id} (${row.topic}) para ${username}`);
         await supabase.from('student_lessons').update({
           lesson_status: 'Pendiente',
           completed: false,
@@ -70,12 +106,16 @@ export const autoUpdateLessonStatuses = async (username: string) => {
           grade: 0,
           bonus_credits: 0,
           credits_transfered: false
-        }).eq('id', l.id);
+        }).eq('id', String(row.id));
       }
     }
   } catch (err) {
-    console.error("Error en auto-actualización y auditoría de lecciones:", err);
+    console.error("Error en auditAndSanitizeStudentLessons:", err);
   }
+};
+
+export const autoUpdateLessonStatuses = async (username: string) => {
+  await auditAndSanitizeStudentLessons(username);
 };
 
 // --- CUENTAS Y SALDOS (CENTRALIZADOS EN TABLA USERS) ---
@@ -427,6 +467,9 @@ export const getCachedQuestions = async (topic: string): Promise<any | null> => 
 };
 
 export const getStudentData = async (username: string): Promise<StudentData | null> => {
+  // Asegurar que cualquier clase sin historial de clase ni examen sea revertida de inmediato
+  await auditAndSanitizeStudentLessons(username);
+
   const { data, error } = await supabase.from('student_lessons').select('*').ilike('student_username', username);
   if (error) return null;
   const mappedLessons: Lesson[] = (data || []).map(row => {

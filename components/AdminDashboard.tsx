@@ -6,7 +6,8 @@ import {
   saveUser, 
   updateUser, 
   deleteUser, 
-  getStudentData, 
+  getStudentData,
+  autoUpdateLessonStatuses, 
   addLessonToStudent, 
   deleteLessonFromStudent, 
   updateLessonInStudent,
@@ -202,6 +203,7 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({ user }) => {
     if (selectedStudent) {
       setIsLoading(true);
       try {
+        await autoUpdateLessonStatuses(selectedStudent);
         const data = await getStudentData(selectedStudent);
         setStudentData(data);
       } catch (err) {
