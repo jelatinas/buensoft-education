@@ -28,114 +28,147 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
   return 'Pendiente';
 };
 
+const RECENT_LESSON_WINDOW_START = '2026-11-02';
+const RECENT_LESSON_WINDOW_END = '2026-11-16';
+
+const lessonClaimsApproval = (row: { completed?: boolean; lesson_status?: string; grade?: number | null }) =>
+  row.completed === true ||
+  row.lesson_status === 'Aprobada' ||
+  row.lesson_status === 'Completada' ||
+  (row.grade != null && Number(row.grade) >= 6);
+
+const historyHasMessages = (chatHistory: unknown) => {
+  const text = String(chatHistory ?? '').trim();
+  return text !== '' && text !== '[]' && text !== 'null';
+};
+
+/**
+ * Corrige solo las lecciones del 2 al 15 de noviembre de 2026 (semana pasada y esta semana).
+ * No modifica lecciones con créditos ya transferidos ni lecciones que sí tienen historial o examen.
+ * Si la consulta de evidencia falla, no revierte nada.
+ */
+const revertUnverifiedRecentLessons = async (username: string) => {
+  const { data: lessons, error } = await supabase
+    .from('student_lessons')
+    .select('id, subject, topic, date, completed, lesson_status, grade, credits_transfered')
+    .ilike('student_username', username)
+    .gte('date', RECENT_LESSON_WINDOW_START)
+    .lt('date', RECENT_LESSON_WINDOW_END);
+
+  if (error) {
+    console.error('No se auditaron lecciones recientes porque falló la consulta:', error.message);
+    return;
+  }
+  if (!lessons || lessons.length === 0) return;
+
+  const suspicious = lessons.filter(row => row.credits_transfered !== true && lessonClaimsApproval(row));
+  if (suspicious.length === 0) return;
+
+  const { data: userRows, error: userError } = await supabase
+    .from('users')
+    .select('id, username')
+    .ilike('username', username)
+    .limit(1);
+  if (userError) {
+    console.error('No se auditaron lecciones recientes porque falló la consulta del estudiante:', userError.message);
+    return;
+  }
+
+  const studentId = userRows?.[0]?.id ? String(userRows[0].id) : '';
+  const { data: chatsByUsername, error: chatUserError } = await supabase
+    .from('class_chat_history')
+    .select('class_id, chat_history')
+    .ilike('estudiante_id', username);
+  const { data: chatsById, error: chatIdError } = studentId
+    ? await supabase.from('class_chat_history').select('class_id, chat_history').eq('estudiante_id', studentId)
+    : { data: [], error: null };
+  if (chatUserError || chatIdError) {
+    console.error('No se auditaron lecciones recientes porque falló la consulta del historial de clase.');
+    return;
+  }
+
+  const { data: examsByUsername, error: examUserError } = await supabase
+    .from('intentos_examen')
+    .select('class_id, calificacion')
+    .ilike('estudiante_id', username)
+    .gte('calificacion', 6);
+  const { data: examsById, error: examIdError } = studentId
+    ? await supabase.from('intentos_examen').select('class_id, calificacion').eq('estudiante_id', studentId).gte('calificacion', 6)
+    : { data: [], error: null };
+  if (examUserError || examIdError) {
+    console.error('No se auditaron lecciones recientes porque falló la consulta de exámenes.');
+    return;
+  }
+
+  const chatClassIdSet = new Set(
+    [...(chatsByUsername || []), ...(chatsById || [])]
+      .filter(row => historyHasMessages(row.chat_history))
+      .map(row => String(row.class_id))
+  );
+  const examClassIdSet = new Set(
+    [...(examsByUsername || []), ...(examsById || [])].map(row => String(row.class_id))
+  );
+
+  const subjects = Array.from(new Set(suspicious.map(row => String(row.subject || 'General').trim().toLowerCase())));
+  const { data: courses, error: courseError } = await supabase.from('courses').select('id, nombre');
+  if (courseError) {
+    console.error('No se auditaron lecciones recientes porque falló la consulta de cursos:', courseError.message);
+    return;
+  }
+  const courseIds = (courses || [])
+    .filter(course => subjects.includes(String(course.nombre || '').trim().toLowerCase()))
+    .map(course => course.id);
+  const { data: classes, error: classError } = courseIds.length > 0
+    ? await supabase.from('classes').select('id, titulo, course_id').in('course_id', courseIds)
+    : { data: [], error: null };
+  if (classError) {
+    console.error('No se auditaron lecciones recientes porque falló la consulta de clases:', classError.message);
+    return;
+  }
+
+  const resolveClassId = (row: { subject?: string; topic?: string }) => {
+    const subject = String(row.subject || 'General').trim().toLowerCase();
+    const course = (courses || []).find(item => String(item.nombre || '').trim().toLowerCase() === subject);
+    if (!course) return null;
+    const topic = String(row.topic || '');
+    const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
+    const lessonNumber = (match ? match[1] : topic).trim().toLowerCase();
+    const topicKey = topic.trim().toLowerCase();
+    const courseClasses = (classes || []).filter(item => String(item.course_id) === String(course.id));
+    const found = courseClasses.find(item => String(item.titulo || '').trim().toLowerCase() === lessonNumber)
+      || courseClasses.find(item => String(item.titulo || '').trim().toLowerCase() === topicKey);
+    return found ? String(found.id) : null;
+  };
+
+  for (const row of suspicious) {
+    const resolvedClassId = resolveClassId(row);
+    if (!resolvedClassId) {
+      console.warn(`[Auditoría reciente] No se revierte la lección ${row.id} (${row.topic}): no se encontró su clase en el catálogo.`);
+      continue;
+    }
+    const candidateIds = [String(row.id), resolvedClassId];
+    const hasChat = candidateIds.some(id => chatClassIdSet.has(id));
+    const hasExam = candidateIds.some(id => examClassIdSet.has(id));
+    if (hasChat || hasExam) continue;
+
+    console.warn(`[Auditoría reciente] Revirtiendo lección sin historial ni examen: ID ${row.id} (${row.topic}) del ${row.date} para ${username}`);
+    const { error: updateError } = await supabase.from('student_lessons').update({
+      lesson_status: 'Pendiente',
+      completed: false,
+      valid_interactions_count: 0,
+      grade: 0,
+      bonus_credits: 0
+    }).eq('id', String(row.id));
+    if (updateError) console.error(`No se pudo revertir la lección ${row.id}:`, updateError.message);
+  }
+};
+
 export const autoUpdateLessonStatuses = async (username: string) => {
   try {
-    const cleanUsername = username.trim().toLowerCase();
-
-    // 1. RESTAURAR clases anteriores a la semana pasada (antes del 2 de noviembre de 2026):
-    // Vuelven a su estado aprobado con créditos transferidos intactos
-    await supabase.from('student_lessons')
-      .update({
-        completed: true,
-        lesson_status: 'Aprobada',
-        credits_transfered: true,
-        valid_interactions_count: 10,
-        grade: 10
-      })
-      .ilike('student_username', cleanUsername)
-      .lt('date', '2026-11-02');
-
-    // 2. Definir la ventana estricta: Esta semana y la semana pasada (desde el lunes 2 de noviembre de 2026)
-    const minDateStr = '2026-11-02';
-
-    // SOLO obtener lecciones recientes (de esta semana y la semana pasada)
-    const { data: lessons, error } = await supabase
-      .from('student_lessons')
-      .select('*')
-      .ilike('student_username', cleanUsername)
-      .gte('date', minDateStr);
-
-    if (error || !lessons || lessons.length === 0) return;
-
-    // Obtener identificadores posibles del estudiante (username y UUID si existe)
-    const studentIdents = [cleanUsername];
-    try {
-      const { data: uData } = await supabase.from('users').select('id').ilike('username', cleanUsername).limit(1);
-      if (uData && uData.length > 0 && uData[0].id) {
-        studentIdents.push(String(uData[0].id).toLowerCase());
-      }
-    } catch (_) {}
-
-    // Traer todos los chats de este estudiante
-    const { data: allChats } = await supabase
-      .from('class_chat_history')
-      .select('class_id, chat_history')
-      .in('estudiante_id', studentIdents);
-
-    // Traer todos los intentos de examen con calificación >= 6
-    const { data: allIntentos } = await supabase
-      .from('intentos_examen')
-      .select('id, class_id, calificacion')
-      .in('estudiante_id', studentIdents)
-      .gte('calificacion', 6);
-
-    const chatClassIdSet = new Set(
-      (allChats || [])
-        .filter(c => c.chat_history && String(c.chat_history).trim() !== '' && String(c.chat_history).trim() !== '[]')
-        .map(c => String(c.class_id))
-    );
-    const intentoClassIdSet = new Set((allIntentos || []).map(i => String(i.class_id)));
-
-    // Mapear courses y classes para resolver class_id si la lección no usó lesson.id
-    const subjects = Array.from(new Set(lessons.map(l => l.subject || 'General')));
-    const { data: materias } = await supabase.from('courses').select('id, nombre').in('nombre', subjects);
-    const materiaMap = new Map((materias || []).map(m => [String(m.nombre).toLowerCase(), m.id]));
-    const materiaIds = Array.from(materiaMap.values());
-
-    let classMap = new Map();
-    if (materiaIds.length > 0) {
-      const { data: classes } = await supabase.from('classes').select('id, titulo, course_id').in('course_id', materiaIds);
-      (classes || []).forEach(c => {
-        classMap.set(`${c.course_id}_${String(c.titulo).trim().toLowerCase()}`, String(c.id));
-      });
-    }
-
-    for (const row of lessons) {
-      // REGLA ESTRICTA: NUNCA tocar lecciones que ya tengan créditos transferidos
-      if (row.credits_transfered === true) continue;
-
-      const topic = String(row.topic || '');
-      const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
-      const lessonNumber = (match ? match[1] : topic).trim().toLowerCase();
-      const materiaId = materiaMap.get(String(row.subject || 'General').toLowerCase());
-      const resolvedClassId = materiaId ? (classMap.get(`${materiaId}_${lessonNumber}`) || classMap.get(`${materiaId}_${topic.toLowerCase()}`)) : null;
-
-      const candidateIds = [String(row.id), resolvedClassId ? String(resolvedClassId) : null].filter(Boolean);
-
-      const hasChat = candidateIds.some(id => chatClassIdSet.has(id));
-      const hasExam = candidateIds.some(id => intentoClassIdSet.has(id));
-
-      // Solo si es una lección de esta semana o la semana pasada sin historial ni examen verificado:
-      if (!hasChat && !hasExam) {
-        console.warn(`[Auditoría Reciente] Revirtiendo lección reciente sin historial ni examen verificado: ID ${row.id} (${row.topic}) del ${row.date} para ${username}`);
-        await supabase.from('student_lessons').update({
-          lesson_status: 'Pendiente',
-          completed: false,
-          valid_interactions_count: 0,
-          grade: 0,
-          bonus_credits: 0,
-          credits_transfered: false
-        }).eq('id', String(row.id));
-      } else if (hasExam) {
-        // Si tiene examen aprobado, asegurar que quede aprobada
-        await supabase.from('student_lessons').update({
-          lesson_status: 'Aprobada',
-          completed: true,
-          valid_interactions_count: 10,
-          grade: 10
-        }).eq('id', String(row.id));
-      }
-    }
+    await supabase.from('student_lessons').update({ lesson_status: 'Aprobada', completed: true }).ilike('student_username', username).gte('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
+    await supabase.from('student_lessons').update({ lesson_status: 'Reprobada', completed: false }).ilike('student_username', username).gt('grade', 0).lt('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
+    await supabase.from('student_lessons').update({ lesson_status: 'En Progreso' }).ilike('student_username', username).or('grade.is.null,grade.eq.0').gt('valid_interactions_count', 0).in('lesson_status', ['Pendiente']);
+    await revertUnverifiedRecentLessons(username);
   } catch (err) {
     console.error("Error en autoUpdateLessonStatuses:", err);
   }
@@ -493,27 +526,24 @@ export const getStudentData = async (username: string): Promise<StudentData | nu
   const { data, error } = await supabase.from('student_lessons').select('*').ilike('student_username', username);
   if (error) return null;
   const mappedLessons: Lesson[] = (data || []).map(row => {
-    const isPast = (row.date && String(row.date) < '2026-11-02') || row.credits_transfered === true;
-    const isApprovedPast = isPast && (row.grade == null || Number(row.grade) >= 6 || row.completed || row.lesson_status === 'Aprobada' || row.credits_transfered);
-
     const rawLesson: Lesson = {
       id: row.id.toString(),
       subject: row.subject,
       title: row.topic,
       durationMinutes: row.duration_minutes,
-      completed: isApprovedPast ? true : row.completed,
+      completed: row.completed,
       date: row.date,
       elapsedSeconds: row.elapsed_seconds || 0,
       actualDurationMinutes: row.actual_duration_minutes, 
-      completedTopicsCount: isApprovedPast ? 10 : (row.valid_interactions_count || 0),
-      grade: isApprovedPast ? (Number(row.grade) || 10) : row.grade,
+      completedTopicsCount: row.valid_interactions_count || 0,
+      grade: row.grade,
       bonusCredits: Number(row.bonus_credits) || 0,
       learningPrompt: row.learning_prompt,
-      credits_transfered: isApprovedPast ? true : row.credits_transfered,
-      lesson_status: isApprovedPast ? 'Aprobada' : row.lesson_status,
+      credits_transfered: row.credits_transfered,
+      lesson_status: row.lesson_status,
       questions: row.questions
     };
-    return { ...rawLesson, lesson_status: isApprovedPast ? 'Aprobada' : calculateLessonStatus(rawLesson) };
+    return { ...rawLesson, lesson_status: calculateLessonStatus(rawLesson) };
   });
   return { username, student_lessons: mappedLessons };
 };
