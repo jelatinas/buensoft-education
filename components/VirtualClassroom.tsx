@@ -372,8 +372,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
               if (slRow.elapsed_seconds) {
                 dbElapsedSeconds = Math.max(dbElapsedSeconds, slRow.elapsed_seconds);
               }
-              if (slRow.lesson_status === 'Aprobada' || slRow.completed) {
-                dbTopicsCount = Math.max(dbTopicsCount, 10);
+              // Mantener temas completados reales de la base de datos
+              if (slRow.valid_interactions_count != null) {
+                dbTopicsCount = Math.max(dbTopicsCount, slRow.valid_interactions_count);
               }
             }
           } catch (e) {
@@ -392,9 +393,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         }
         dbTopicsCount = Math.max(dbTopicsCount, maxTopicFromHistory);
 
-        if (lesson.lesson_status === 'Aprobada' || lesson.completed) {
-          dbTopicsCount = Math.max(dbTopicsCount, 10);
-        }
+        // Temas completados deben reflejar el avance real
 
         lesson.completedTopicsCount = dbTopicsCount;
         lesson.elapsedSeconds = dbElapsedSeconds;
@@ -561,7 +560,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     try {
       const isAlreadyApproved = lesson.lesson_status === 'Aprobada' || lesson.completed || (lesson.grade !== undefined && lesson.grade >= 6);
       const currentStatus = isAlreadyApproved ? 'Aprobada' : 'En Progreso';
-      const finalTopics = isAlreadyApproved ? Math.max(topicsCount, 10) : topicsCount;
+      const finalTopics = topicsCount;
       lesson.completedTopicsCount = finalTopics;
       lesson.elapsedSeconds = time;
       await updateLessonInStudent(user.username, {
@@ -1556,8 +1555,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
               onFinish={async (grade) => {
                 isLessonFinishedRef.current = true;
                 const isPassed = grade >= 6;
-                const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
-                const finalTopics = isPassed ? Math.max(completedTopicsRef.current, totalTopics) : completedTopicsRef.current;
+                const finalTopics = completedTopicsRef.current;
                 const finalSeconds = Math.max(secondsRef.current, lesson.elapsedSeconds || 0);
 
                 const sessionBonusCount = sessionBonusRef.current;

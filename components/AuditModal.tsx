@@ -26,14 +26,11 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
       setIsLoading(true);
       try {
         const leccionId = await getClassIdFromLesson(lesson);
-        if (!leccionId) {
-          setIsLoading(false);
-          return;
-        }
+        const effectiveLeccionId = leccionId || lesson.id;
 
         const [history, examIntentos, latestLessonRow] = await Promise.all([
-          getClassChatHistory(leccionId, studentUsername),
-          getIntentosExamen(studentId, leccionId),
+          getClassChatHistory(effectiveLeccionId, studentId, studentUsername, lesson.id),
+          getIntentosExamen(studentId, effectiveLeccionId, studentUsername, lesson.id),
           getStudentLessonById(lesson.id)
         ]);
         setLessonHistory(history);

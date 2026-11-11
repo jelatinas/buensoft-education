@@ -317,6 +317,87 @@ async function intentoBelongsTo(intentoId, session) {
   if (error || !data) return false;
   return matches(data.estudiante_id, session);
 }
+async function verifyLessonsHaveAuditProof(lessonIds, session) {
+  const clean = (lessonIds || []).map((id) => String(id)).filter(Boolean);
+  if (clean.length === 0) return { valid: false, reason: "No hay lecciones seleccionadas." };
+
+  const { data: lessons, error } = await getAdmin()
+    .from("student_lessons")
+    .select("id, student_username, topic, subject")
+    .in("id", clean);
+
+  if (error || !lessons || lessons.length !== clean.length) {
+    return { valid: false, reason: "No se pudieron verificar las lecciones solicitadas." };
+  }
+
+  const studentIdents = identities(session);
+
+  for (const l of lessons) {
+    const topic = l.topic || "Lección 0";
+    const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
+    const lessonNumber = match ? match[1] : topic;
+    const candidates = [String(l.id)];
+
+    if (l.subject) {
+      const { data: courses } = await getAdmin()
+        .from("courses")
+        .select("id")
+        .ilike("nombre", l.subject)
+        .limit(1);
+      const courseId = courses?.[0]?.id;
+      if (courseId) {
+        const { data: classes } = await getAdmin()
+          .from("classes")
+          .select("id")
+          .eq("course_id", courseId)
+          .ilike("titulo", String(lessonNumber))
+          .limit(1);
+        if (classes?.[0]?.id) {
+          candidates.push(String(classes[0].id));
+        }
+      }
+    }
+
+    // 1. Verificar class_chat_history
+    const { data: chats } = await getAdmin()
+      .from("class_chat_history")
+      .select("id, chat_history")
+      .in("estudiante_id", studentIdents)
+      .in("class_id", candidates)
+      .limit(1);
+
+    const hasChat = chats && chats.length > 0 && chats[0].chat_history && String(chats[0].chat_history).trim() !== "[]";
+    if (!hasChat) {
+      return { valid: false, reason: 'La lección "' + (l.topic || 'Lección') + '" no tiene historial de clase completada en el aula virtual.' };
+    }
+
+    // 2. Verificar intentos_examen con calificación >= 6
+    const { data: intentos } = await getAdmin()
+      .from("intentos_examen")
+      .select("id, calificacion")
+      .in("estudiante_id", studentIdents)
+      .in("class_id", candidates)
+      .gte("calificacion", 6)
+      .limit(1);
+
+    if (!intentos || intentos.length === 0) {
+      return { valid: false, reason: 'La lección "' + (l.topic || 'Lección') + '" no tiene un examen aprobado registrado.' };
+    }
+
+    // 3. Verificar que el intento tenga respuestas registradas
+    const { count: respCount } = await getAdmin()
+      .from("respuestas_estudiante")
+      .select("id", { count: "exact", head: true })
+      .eq("intento_id", String(intentos[0].id));
+
+    if (respCount == null || respCount === 0) {
+      return { valid: false, reason: 'El examen de la lección "' + (l.topic || 'Lección') + '" no tiene preguntas ni respuestas registradas.' };
+    }
+  }
+
+  return { valid: true };
+}
+
 function deny(message) {
   const error = new Error(message);
   error.status = 403;
@@ -419,6 +500,24 @@ async function authorizeTable(session, query) {
     const idFilter = (query.filters || []).find((filter) => filter.column === "id" && (filter.op === "eq" || filter.op === "in"));
     const ids = idFilter ? idFilter.op === "in" ? idFilter.value : [idFilter.value] : [];
     if (!await lessonIdsBelongTo(ids, session)) deny("Esa lecci\xF3n no es tuya.");
+
+    if ((action === "update" || action === "upsert") && !isAdmin(session)) {
+      const rows = rowsOf(query.values);
+      const isAttemptingApproval = rows.some((row) =>
+        row.completed === true ||
+        row.lesson_status === "Aprobada" ||
+        row.lesson_status === "Completada" ||
+        (row.grade != null && Number(row.grade) >= 6) ||
+        (row.bonus_credits != null && Number(row.bonus_credits) > 0)
+      );
+
+      if (isAttemptingApproval) {
+        const auditCheck = await verifyLessonsHaveAuditProof(ids, session);
+        if (!auditCheck.valid) {
+          deny(auditCheck.reason || "No se puede aprobar la lección sin historial de clase y examen verificado.");
+        }
+      }
+    }
     return;
   }
   if (OWN_ROWS.has(table)) {
@@ -511,6 +610,13 @@ async function authorizeRpc(session, fn, args) {
     }
     const approved = row.lesson_status === "Aprobada" || row.lesson_status === "Completada" || Number(row.grade) >= 6;
     if (!approved || row.credits_transfered) deny("Esas lecciones no est\xE1n listas para transferir.");
+  }
+
+  if (!isAdmin(session)) {
+    const auditCheck = await verifyLessonsHaveAuditProof(lessonIds, session);
+    if (!auditCheck.valid) {
+      deny(auditCheck.reason || "No se pueden transferir créditos de lecciones sin historial de clase o examen verificado.");
+    }
   }
 }
 

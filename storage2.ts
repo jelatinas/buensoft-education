@@ -30,11 +30,51 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
 
 export const autoUpdateLessonStatuses = async (username: string) => {
   try {
-    await supabase.from('student_lessons').update({ lesson_status: 'Aprobada', completed: true }).ilike('student_username', username).gte('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
-    await supabase.from('student_lessons').update({ lesson_status: 'Reprobada', completed: false }).ilike('student_username', username).gt('grade', 0).lt('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
-    await supabase.from('student_lessons').update({ lesson_status: 'En Progreso' }).ilike('student_username', username).or('grade.is.null,grade.eq.0').gt('valid_interactions_count', 0).in('lesson_status', ['Pendiente']);
+    const { data: lessons, error } = await supabase
+      .from('student_lessons')
+      .select('*')
+      .ilike('student_username', username);
+
+    if (error || !lessons || lessons.length === 0) return;
+
+    const mappedLessons: Lesson[] = lessons.map(row => ({
+      id: row.id.toString(),
+      subject: row.subject,
+      title: row.topic,
+      durationMinutes: row.duration_minutes,
+      completed: row.completed,
+      date: row.date,
+      elapsedSeconds: row.elapsed_seconds || 0,
+      actualDurationMinutes: row.actual_duration_minutes,
+      completedTopicsCount: row.valid_interactions_count || 0,
+      grade: row.grade,
+      bonusCredits: Number(row.bonus_credits) || 0,
+      credits_transfered: row.credits_transfered,
+      lesson_status: row.lesson_status,
+    }));
+
+    const auditMap = await getAuditStatusesBulk(username, username, mappedLessons);
+
+    for (const l of mappedLessons) {
+      const audit = auditMap[l.id];
+      const isClaimedApproved = l.lesson_status === 'Aprobada' || l.lesson_status === 'Completada' || l.completed || (l.grade != null && l.grade >= 6);
+      const hasRealAudit = audit && audit.hasGeminiLesson && audit.hasExamAttempts;
+
+      // REGLA ESTRICTA: Las clases que no tengan historial de clase tomada y examen no pueden estar completadas
+      if (isClaimedApproved && !hasRealAudit) {
+        console.warn(`[Auditoría Estricta] Revertiendo lección sin historial ni examen verificado: ID ${l.id} (${l.title}) para ${username}`);
+        await supabase.from('student_lessons').update({
+          lesson_status: 'Pendiente',
+          completed: false,
+          valid_interactions_count: 0,
+          grade: 0,
+          bonus_credits: 0,
+          credits_transfered: false
+        }).eq('id', l.id);
+      }
+    }
   } catch (err) {
-    console.error("Error en auto-actualización de estatus:", err);
+    console.error("Error en auto-actualización y auditoría de lecciones:", err);
   }
 };
 
@@ -543,7 +583,7 @@ export const updateLessonInStudent = async (username: string, updatedLesson: Les
     grade: updatedLesson.grade,
     elapsed_seconds: updatedLesson.elapsedSeconds,
     actual_duration_minutes: updatedLesson.actualDurationMinutes ?? Math.ceil((updatedLesson.elapsedSeconds || 0) / 60),
-    valid_interactions_count: isApproved ? Math.max(updatedLesson.completedTopicsCount || 0, 10) : updatedLesson.completedTopicsCount,
+    valid_interactions_count: updatedLesson.completedTopicsCount || 0,
     lesson_status: isApproved ? 'Aprobada' : updatedLesson.lesson_status,
     subject: updatedLesson.subject,
     topic: cleanTopic,
@@ -685,16 +725,19 @@ export const getLeccionById = async (id: string | number): Promise<any | null> =
   return data;
 };
 
-export const getClassChatHistory = async (lessonId: string | number, studentId: string): Promise<any | null> => {
+export const getClassChatHistory = async (lessonId: string | number, studentId: string, studentUsername?: string, altLessonId?: string | number): Promise<any | null> => {
+  const idList = [String(lessonId), altLessonId ? String(altLessonId) : null].filter(Boolean) as string[];
+  const studentList = [String(studentId), studentUsername ? String(studentUsername) : null].filter(Boolean) as string[];
+
   const { data, error } = await supabase
     .from('class_chat_history')
     .select('*')
-    .eq('class_id', String(lessonId))
-    .eq('estudiante_id', String(studentId))
-    .maybeSingle();
-  
-  if (error) return null;
-  return data;
+    .in('class_id', idList)
+    .in('estudiante_id', studentList)
+    .limit(1);
+
+  if (error || !data || data.length === 0) return null;
+  return data[0];
 };
 
 export const saveClassChatHistory = async (lessonId: string | number, studentId: string, content: string) => {
@@ -920,7 +963,6 @@ export const updateLessonGradeAndStatus = async (lessonId: string, grade: number
   };
 
   if (isPassed) {
-    updateData.valid_interactions_count = 10;
     updateData.date_completed = new Date().toISOString();
   }
   
@@ -1244,26 +1286,29 @@ export const updateSetting = async (key: string, value: string) => {
 export const checkAuditStatus = async (studentId: string, studentUsername: string, lesson: Lesson) => {
   try {
     const classId = await getClassIdFromLesson(lesson);
-    if (!classId) return { hasGeminiLesson: false, hasExamAttempts: false };
+    const possibleClassIds = Array.from(new Set([classId ? String(classId) : null, lesson.id ? String(lesson.id) : null].filter(Boolean) as string[]));
+    if (possibleClassIds.length === 0) return { hasGeminiLesson: false, hasExamAttempts: false };
+
+    const studentIdents = Array.from(new Set([studentId, studentUsername].filter(Boolean) as string[]));
 
     // Check class_chat_history
     const { data: geminiLesson } = await supabase
       .from('class_chat_history')
       .select('id')
-      .eq('class_id', String(classId))
-      .eq('estudiante_id', studentId)
-      .maybeSingle();
+      .in('class_id', possibleClassIds)
+      .in('estudiante_id', studentIdents)
+      .limit(1);
     
     // Check intentos_examen
     const { data: intentos } = await supabase
       .from('intentos_examen')
       .select('id')
-      .eq('estudiante_id', studentId)
-      .eq('class_id', String(classId))
+      .in('estudiante_id', studentIdents)
+      .in('class_id', possibleClassIds)
       .limit(1);
       
     return {
-      hasGeminiLesson: !!geminiLesson,
+      hasGeminiLesson: !!geminiLesson && geminiLesson.length > 0,
       hasExamAttempts: !!intentos && intentos.length > 0
     };
   } catch (err) {
@@ -1272,14 +1317,15 @@ export const checkAuditStatus = async (studentId: string, studentUsername: strin
   }
 };
 
-export const getIntentosExamen = async (estudianteId: string, classId: string | number): Promise<IntentoExamen[]> => {
-  const idStr = String(classId);
+export const getIntentosExamen = async (estudianteId: string, classId: string | number, altStudentId?: string, altClassId?: string | number): Promise<IntentoExamen[]> => {
+  const idList = Array.from(new Set([String(classId), altClassId ? String(altClassId) : null].filter(Boolean) as string[]));
+  const studentList = Array.from(new Set([String(estudianteId), altStudentId ? String(altStudentId) : null].filter(Boolean) as string[]));
 
   const result = await supabase
     .from('intentos_examen')
     .select('*')
-    .eq('estudiante_id', estudianteId)
-    .eq('class_id', idStr)
+    .in('estudiante_id', studentList)
+    .in('class_id', idList)
     .order('fecha_inicio', { ascending: false });
 
   if (!result.error) return result.data || [];
