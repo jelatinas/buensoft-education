@@ -454,9 +454,10 @@ export const generateTeacherResponse = async (
     5. Si tardó, reconócelo en positivo y refuerza la idea antes de la siguiente pregunta. No agregues preguntas extra por el tiempo.
     6. Si es incorrecta, no avances: explica el error en una frase y haz otra pregunta abierta del mismo tema.
     7. Una sola pregunta por turno. La clase debe sentirse ligera, no un interrogatorio.
-    8. Si la indicación dice SOSPECHA_IA, la respuesta parece de una herramienta de IA. No avances de tema y no des la respuesta. En una frase, pide que conteste con sus propias palabras. Luego UNA pregunta abierta nueva, parecida, del mismo tema.
+    8. Si la indicación dice SOSPECHA_IA, la respuesta parece de una herramienta de IA. No avances de tema y no des la respuesta. En una frase, con humor seco, pide que la diga con sus palabras. Luego UNA pregunta abierta nueva, parecida, del mismo tema.
     9. Si la indicación dice FUERA_DE_TEMA, el estudiante se salió de la lección. No sigas la tangente ni avances. En una frase, vuelve al tema. Luego UNA pregunta abierta similar del mismo tema.
-    10. No repitas el feedback de turnos anteriores. Varía el ejemplo y la forma de decirlo.
+    10. Si la indicación dice PERDIO_ENFOQUE, el estudiante salió de la pantalla de la lección. No avances, no reveles la respuesta anterior y no des un sermón. En una frase distinta a las anteriores, di que la pregunta cambia. Luego UNA pregunta nueva del mismo tema, del tipo que pida la indicación.
+    11. No repitas el feedback de turnos anteriores. Varía el ejemplo y la forma de decirlo.
   `;
 
   const cardRule = `Dentro de [EXPLICACION] incluye SIEMPRE estas dos etiquetas, en este orden, cada una con UNA sola oración:
@@ -583,11 +584,23 @@ export const evaluateStudentAnswer = async (
   lastQuestion: string,
   user?: any
 ) => {
+  if (looksMachineWritten(studentAnswer)) {
+    return {
+      aprobado: false,
+      nivel: 'incorrecta',
+      sospecha_ia: true,
+      fuera_de_tema: false,
+      retroalimentacion: 'Eso suena a texto armado, no a alguien contestando en el momento.',
+    };
+  }
+
   const cached = await getCachedEvaluation(lastQuestion, studentAnswer);
-  if (cached) {
+  if (cached && studentAnswer.trim().length < 180) {
     return {
       aprobado: !!cached.is_correct,
       nivel: cached.is_correct ? 'correcta' : 'incorrecta',
+      sospecha_ia: false,
+      fuera_de_tema: false,
       retroalimentacion: cached.feedback,
     };
   }
@@ -608,7 +621,8 @@ Clasifica la comprensión:
 - parcial: va bien encaminado, pero le falta una parte importante.
 - incorrecta: no demuestra el concepto.
 aprobado es true solo si el nivel es correcta, la respuesta está en el tema y no parece generada por IA.
-sospecha_ia es true si el texto parece pegado de una herramienta de IA: ensayo con introducción y conclusión, "cabe destacar", "es fundamental comprender", "en primer lugar / en conclusión", "como modelo de lenguaje", listas numeradas de manual, o un tono de artículo que no suena a alguien contestando en clase. Una respuesta clara y bien escrita de una persona adulta NO es sospecha_ia.
+sospecha_ia es true si el texto parece generado o pegado de una herramienta de IA, aunque el contenido sea correcto. Señales: definición de manual, párrafo de artículo, introducción y conclusión, listas, markdown, conectores de ensayo ("en primer lugar", "asimismo", "en conclusión", "cabe destacar", "es fundamental", "se define como", "consiste en"), tono impersonal y una explicación demasiado pulida y completa para un chat. Si dudas entre una persona que escribe bien y un texto de IA, marca sospecha_ia true.
+Una respuesta corta, hablada, con dudas, muletillas o un ejemplo propio NO es sospecha_ia.
 fuera_de_tema es true si ignora la pregunta, cambia de asunto, pide hacer otra cosa o no se puede conectar con la lección. "No sé" o una idea incompleta del tema es incorrecta o parcial, no fuera_de_tema.
 Si sospecha_ia o fuera_de_tema, nivel es incorrecta y aprobado es false.
 La retroalimentación es UNA frase, distinta y de adulto. Si es parcial, di qué sí entendió y qué faltó. No incluyas otra pregunta ni repitas "muy bien" o "excelente".
@@ -653,27 +667,65 @@ JSON: {"nivel":"correcta|parcial|incorrecta","aprobado":true/false,"sospecha_ia"
 const AI_VOICE_PATTERNS = [
   /como modelo de lenguaje/i,
   /como inteligencia artificial/i,
+  /\bas an ai\b/i,
   /espero que (esto|te) (ayude|sirva|sea útil)/i,
-  /cabe (destacar|resaltar|mencionar)/i,
-  /es (fundamental|crucial|imprescindible) (comprender|entender|destacar|señalar)/i,
-  /en (conclusión|síntesis),/i,
-  /a continuación (se|te) (presenta|explica)/i,
-  /por un lado[\s\S]{0,120}por otro lado/i,
+  /cabe (destacar|resaltar|mencionar|se[nñ]alar)/i,
+  /es (fundamental|crucial|imprescindible) (comprender|entender|destacar|se[nñ]alar)/i,
+  /en (conclusi[oó]n|s[ií]ntesis|resumen|definitiva)/i,
+  /a continuaci[oó]n/i,
+  /en (primer|segundo|tercer) lugar/i,
+  /por (lo tanto|consiguiente|ende)/i,
+  /en este sentido/i,
+  /asimismo|de igual manera|no obstante/i,
+  /vale la pena (mencionar|destacar|se[nñ]alar)/i,
+  /es relevante (destacar|mencionar|se[nñ]alar)/i,
+  /dicho (de otro modo|esto)/i,
+  /en otras palabras/i,
 ];
+
+const TEXTBOOK_PATTERNS = [
+  /se (caracteriza|define|emplea|utiliza)/i,
+  /consiste en/i,
+  /tiene como (finalidad|objetivo)/i,
+  /es aquella/i,
+  /a trav[eé]s de/i,
+  /su (objetivo|finalidad|prop[oó]sito) es/i,
+];
+
+const SPOKEN_VOICE = /\b(yo|creo|pues|o sea|osea|no s[eé]|tipo|bueno|porque|la verdad|me late|okey|ok|mmm)\b/i;
 
 function looksMachineWritten(answer: string): boolean {
   const text = String(answer || '').trim();
-  if (/como modelo de lenguaje|como inteligencia artificial/i.test(text)) return true;
-  if (text.length < 80) return false;
-  let hits = 0;
+  if (/como modelo de lenguaje|como inteligencia artificial|\bas an ai\b/i.test(text)) return true;
+  if (text.length < 70) return false;
+
+  let score = 0;
+  if (/\*\*|__|```|^#{1,3}\s/m.test(text)) score += 3;
+  const bullets = text.split(/\n/).filter(line => /^\s*([-*•]|\d+[\.\)])\s+\S+/.test(line)).length;
+  if (bullets >= 2) score += 3;
+  else if (bullets === 1) score += 1;
+
+  let formal = 0;
   for (const pattern of AI_VOICE_PATTERNS) {
-    if (pattern.test(text)) hits += 1;
+    if (pattern.test(text)) formal += 1;
   }
-  const numbered = text.split(/\n/).filter(line => /^\s*\d+[\.\)]\s+\S+/.test(line)).length;
-  if (numbered >= 3) hits += 1;
-  const headings = (text.match(/\b(introducción|desarrollo|conclusión)\b/gi) || []).length;
-  if (headings >= 2) hits += 1;
-  return hits >= 2;
+  if (formal >= 2) score += 3;
+  else if (formal === 1) score += 2;
+
+  let textbook = 0;
+  for (const pattern of TEXTBOOK_PATTERNS) {
+    if (pattern.test(text)) textbook += 1;
+  }
+  if (textbook >= 2) score += 3;
+  else if (textbook === 1) score += 2;
+
+  const sentences = text.split(/[.!?]+/).map(part => part.trim()).filter(part => part.length > 25);
+  const spoken = SPOKEN_VOICE.test(text);
+  if (!spoken && sentences.length >= 3 && text.length >= 200) score += 3;
+  else if (!spoken && text.length >= 450) score += 2;
+  if (/[—–]/.test(text) && text.length > 160) score += 1;
+
+  return score >= 3;
 }
 
 export const generateExam = async (lessonTitle: string, chatHistory: any[], neededMCQ: number, neededOpen: number, neededTF: number) => {

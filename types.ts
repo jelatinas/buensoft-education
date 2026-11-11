@@ -184,5 +184,6 @@ export interface ChatMessage {
   is_unlocked?: boolean;
   isError?: boolean;
   isStreaming?: boolean; // true while text is still streaming in
+  isExamReady?: boolean;
 }
 

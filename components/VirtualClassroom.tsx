@@ -146,6 +146,17 @@ function questionKind(text: string): 'MCQ' | 'WRITTEN' | null {
   }
 }
 
+function pendingQuestion(messages: ChatMessage[]): 'MCQ' | 'WRITTEN' | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.isStreaming) return null;
+    if (message.role === 'user') return null;
+    if (message.role !== 'model' || message.isError || message.isExamReady) continue;
+    return questionKind(message.parts?.[0]?.text || '');
+  }
+  return null;
+}
+
 function openAlreadyAccepted(messages: ChatMessage[]): boolean {
   let start = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -216,6 +227,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   const [preparingGame, setPreparingGame] = useState(false);
   const continueAfterGameRef = useRef<PendingClassTurn | null>(null);
   const activeGameRef = useRef(false);
+  const showExamRef = useRef(false);
+  const isLoadingRef = useRef(true);
+  const focusLostRef = useRef(false);
+  const pastedLongRef = useRef(false);
+  const reaskLockRef = useRef(false);
+  const lessonArmedRef = useRef(false);
+  const askAgainRef = useRef<() => Promise<void>>(async () => {});
   
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const masterLeccionIdRef = useRef<string | null>(null);
@@ -232,6 +250,8 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   useEffect(() => { resumeInteractionsRef.current = resumeInteractions; }, [resumeInteractions]);
   useEffect(() => { secondsRef.current = secondsElapsed; }, [secondsElapsed]);
   useEffect(() => { messagesRef.current = messages; }, [messages]);
+  useEffect(() => { showExamRef.current = showExam; }, [showExam]);
+  useEffect(() => { isLoadingRef.current = isLoading; }, [isLoading]);
 
   // Preload MCQs whenever the topic changes or we enter review mode
   useEffect(() => {
@@ -290,20 +310,53 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     };
     
     const blurTimeoutRef = { current: null as NodeJS.Timeout | null };
+    const awayTimerRef = { current: null as NodeJS.Timeout | null };
+
+    const confirmAway = () => {
+      if (awayTimerRef.current || isAdminAudit || !lessonArmedRef.current) return;
+      awayTimerRef.current = setTimeout(() => {
+        awayTimerRef.current = null;
+        const away = document.hidden || !document.hasFocus();
+        if (!away || showExamRef.current || activeGameRef.current || reaskLockRef.current) return;
+        if (pendingQuestion(messagesRef.current)) focusLostRef.current = true;
+      }, 400);
+    };
+
+    const confirmBack = () => {
+      if (awayTimerRef.current) {
+        clearTimeout(awayTimerRef.current);
+        awayTimerRef.current = null;
+      }
+      if (document.hidden) return;
+      if (!lessonArmedRef.current) {
+        lessonArmedRef.current = true;
+        focusLostRef.current = false;
+        setIsPaused(false);
+        return;
+      }
+      setIsPaused(false);
+      if (focusLostRef.current) void askAgainRef.current();
+    };
     
     const handleVisibilityChange = () => {
       if (document.hidden) {
+         confirmAway();
          blurTimeoutRef.current = setTimeout(() => {
            if (!activeGameRef.current) setIsPaused(true);
          }, 10000);
       } else {
          if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
-         setIsPaused(false);
+         confirmBack();
       }
     };
 
+    const handleWindowBlur = () => confirmAway();
+    const handleWindowFocus = () => confirmBack();
+
     window.addEventListener('mousemove', resetInactivity);
     window.addEventListener('keydown', resetInactivity);
+    window.addEventListener('blur', handleWindowBlur);
+    window.addEventListener('focus', handleWindowFocus);
     document.addEventListener('visibilitychange', handleVisibilityChange);
     
     resetInactivity();
@@ -311,11 +364,14 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return () => {
       window.removeEventListener('mousemove', resetInactivity);
       window.removeEventListener('keydown', resetInactivity);
+      window.removeEventListener('blur', handleWindowBlur);
+      window.removeEventListener('focus', handleWindowFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       if (inactivityTimerRef.current) clearTimeout(inactivityTimerRef.current);
       if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
+      if (awayTimerRef.current) clearTimeout(awayTimerRef.current);
     };
-  }, [isPaused, showExam]);
+  }, [isPaused, showExam, isAdminAudit]);
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
@@ -700,14 +756,66 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
   };
 
-  // Core response generator - shared between handleSend (WRITTEN) and handleMCQSelect
+  askAgainRef.current = async () => {
+    if (!focusLostRef.current || reaskLockRef.current) return;
+    if (isAdminAudit || showExamRef.current || activeGameRef.current || isLoadingRef.current) return;
+    const kind = pendingQuestion(messagesRef.current);
+    if (!kind) return;
+
+    focusLostRef.current = false;
+    pastedLongRef.current = false;
+    reaskLockRef.current = true;
+    setInput('');
+    if (inputRef.current) inputRef.current.value = '';
+    setCombo(0);
+    setMood('oops');
+
+    const totalTopics = (lesson.microtemas && lesson.microtemas.length > 0) ? lesson.microtemas.length : 10;
+    const topicIndex = completedTopicsRef.current < totalTopics ? completedTopicsRef.current : (totalTopics - 1);
+    const topicTitle = lesson.microtemas?.[topicIndex]?.titulo || lesson.title;
+    const open = kind !== 'MCQ';
+    const angles = [
+      'Se fue de la pantalla. Humor seco, una frase, y cambia la pregunta.',
+      'Perdió el foco de la lección. Sin sermón: otra pregunta del mismo tema.',
+      'Salió a otra pestaña. Trato de adulto, una frase distinta, pregunta nueva.',
+      'Dejó la lección a medias. Cambia el ejemplo y no repitas el regaño anterior.',
+    ];
+    const angle = angles[messagesRef.current.length % angles.length];
+    const teacherContext = `[PERDIO_ENFOQUE][SIGUIENTE:${open ? 'ABIERTA' : 'MCQ'}] ${angle} Seguimos en "${topicTitle}". No avances de tema y no des la respuesta de la pregunta anterior. La siguiente pregunta es ${open ? 'ABIERTA' : 'de opción múltiple'}.`;
+
+    try {
+      await resumeClassTurn({
+        teacherContext,
+        newCompletedTopics: completedTopicsRef.current,
+        newResumeInteractions: resumeInteractionsRef.current,
+      });
+    } finally {
+      reaskLockRef.current = false;
+    }
+  };
+
+  useEffect(() => {
+    const away = document.hidden || !document.hasFocus();
+    if (!lessonArmedRef.current) {
+      if (!away) lessonArmedRef.current = true;
+      return;
+    }
+    if (away && !showExam && !activeGame && !preparingGame && pendingQuestion(messages)) {
+      focusLostRef.current = true;
+      return;
+    }
+    if (!away && !isLoading && !showExam && !activeGame && !preparingGame && focusLostRef.current) {
+      void askAgainRef.current();
+    }
+  }, [messages, isLoading, showExam, activeGame, preparingGame]);
   const generateAndAppendTeacherResponse = async (
     studentAnswer: string,
     currentMessages: ChatMessage[],
     skipUserBubble: boolean = false,
     mcqIsCorrect?: boolean,
     customFeedback?: string,
-    mcqExpectedCorrect?: string
+    mcqExpectedCorrect?: string,
+    forceHold?: 'focus' | 'paste'
   ) => {
     const targetSeconds = (lesson.durationMinutes || 0) * 60;
     const minRequiredSeconds = Math.round(targetSeconds * 0.50);
@@ -748,8 +856,16 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       setIsLoading(true);
       
       let evalResult;
-      // Skip AI evaluation for MCQ - we already know if it's correct
-      if (mcqIsCorrect !== undefined) {
+      // Salir de la pantalla o pegar un texto largo no se califica como acierto.
+      if (forceHold) {
+        evalResult = {
+          aprobado: false,
+          nivel: 'incorrecta',
+          sospecha_ia: forceHold === 'paste',
+          fuera_de_tema: false,
+          retroalimentacion: '',
+        };
+      } else if (mcqIsCorrect !== undefined) {
         const explanation = customFeedback || (mcqIsCorrect ? "La respuesta elegida fue la correcta." : `Opción incorrecta. Seleccionaste "${studentAnswer}", pero la respuesta correcta era: "${lastCorrect}".`);
         evalResult = { 
           aprobado: mcqIsCorrect, 
@@ -785,7 +901,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         }
       }
 
-      const nivel: 'correcta' | 'parcial' | 'incorrecta' = mcqIsCorrect !== undefined
+      const nivel: 'correcta' | 'parcial' | 'incorrecta' = forceHold
+        ? 'incorrecta'
+        : mcqIsCorrect !== undefined
         ? (mcqIsCorrect ? 'correcta' : 'incorrecta')
         : (evalResult.nivel || (evalResult.aprobado ? 'correcta' : 'incorrecta'));
       const lastIsOpen = questionKind(lastModelMessage?.parts?.[0]?.text || '') !== 'MCQ';
@@ -800,10 +918,18 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         ? ' El estudiante se tomó su tiempo. Reconócelo en positivo y refuerza la idea central antes de la pregunta. No agregues preguntas extra por eso.'
         : '';
       const topicTitle = lesson.microtemas?.[completedTopicsRef.current < totalTopics ? completedTopicsRef.current : (totalTopics - 1)]?.titulo || lesson.title;
-      const suspectedAi = lastIsOpen && !!evalResult.sospecha_ia;
-      const offTopic = lastIsOpen && !suspectedAi && !!evalResult.fuera_de_tema;
+      const lostFocus = forceHold === 'focus';
+      const suspectedAi = lastIsOpen && (forceHold === 'paste' || !!evalResult.sospecha_ia);
+      const offTopic = lastIsOpen && !lostFocus && !suspectedAi && !!evalResult.fuera_de_tema;
 
-      if (suspectedAi || offTopic) {
+      if (lostFocus) {
+        newCorrectAnswers = openBefore ? 1 : 0;
+        setCombo(0);
+        setMood('oops');
+        teacherContext = lastIsOpen
+          ? `[PERDIO_ENFOQUE][SIGUIENTE:ABIERTA] El estudiante salió de la pantalla antes de responder "${lastQuestion}". No avances de tema. Seguimos en "${topicTitle}". UNA frase, humor seco, trato de adulto, distinta a las anteriores. No des la respuesta. Luego UNA pregunta ABIERTA nueva del mismo tema, con otro ejemplo.`
+          : `[PERDIO_ENFOQUE][SIGUIENTE:MCQ] El estudiante salió de la pantalla antes de cerrar la opción múltiple. No avances de tema, no reveles la opción correcta y no repitas la misma pregunta. UNA frase, humor seco. Luego OTRA opción múltiple de "${topicTitle}", con otro ejemplo.`;
+      } else if (suspectedAi || offTopic) {
         newCorrectAnswers = openBefore ? 1 : 0;
         setCombo(0);
         setMood('oops');
@@ -978,7 +1104,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     }
 
     // INSTANT PRELOADED MCQ CHECK - Solo si la respuesta fue correcta (si falló, la IA debe analizar el error)
-    if (mcqIsCorrect === undefined && /\[SIGUIENTE:MCQ\]/.test(teacherContext) && !/PARCIAL|se tomó su tiempo/.test(teacherContext) && !isReadyForExamNow && !isTopicCompleted) {
+    if (mcqIsCorrect === undefined && /\[SIGUIENTE:MCQ\]/.test(teacherContext) && !/PARCIAL|se tomó su tiempo|PERDIO_ENFOQUE|SOSPECHA_IA|FUERA_DE_TEMA/.test(teacherContext) && !isReadyForExamNow && !isTopicCompleted) {
        const askedList = getAskedQuestionsFromMessages(messages);
        const validPreloaded = preloadedMCQs.filter(q => !askedList.some(a => isSimilarQuestion(q.question, a)));
        if (validPreloaded.length > 0) {
@@ -1097,7 +1223,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
   // Handle MCQ option click - creates student message bubble with reaction & feedback
   const handleMCQSelect = async (opt: string, correctAnswer: string, messageIndex: number) => {
-    if (isLoading || isPaused || isAdminAudit || activeGame || preparingGame) return;
+    if (isLoading || isPaused || isAdminAudit || activeGame || preparingGame || reaskLockRef.current) return;
+    const lostFocus = focusLostRef.current;
+    if (lostFocus) focusLostRef.current = false;
     
     const modelMsg = messages[messageIndex];
     let qData: any = null;
@@ -1110,11 +1238,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
     const effectiveCorrect = correctAnswer || qData?.correct || '';
     const effectiveOptions = qData?.options || [];
-    const isCorrect = checkMCQAnswer(opt, effectiveCorrect, effectiveOptions);
+    const isCorrect = lostFocus ? false : checkMCQAnswer(opt, effectiveCorrect, effectiveOptions);
     
     setMcqSelections(prev => ({ ...prev, [messageIndex]: { selected: opt, correct: effectiveCorrect } }));
     
-    const feedbackText = isCorrect 
+    const feedbackText = lostFocus
+      ? 'Saliste de la pantalla. Esa pregunta ya no cuenta.'
+      : isCorrect 
       ? (lastAskedMCQExplanationRef.current || "¡Excelente! Has elegido la opción correcta.") 
       : `Opción incorrecta. Seleccionaste "${opt}", pero la respuesta correcta es: "${effectiveCorrect}".`;
 
@@ -1131,7 +1261,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       currentMsgs[messageIndex] = { ...currentMsgs[messageIndex], selectedOption: opt, is_correct: isCorrect };
       const msgsWithUser = [...currentMsgs, userMsg];
       setMessages(msgsWithUser);
-      await generateAndAppendTeacherResponse(opt, msgsWithUser, false, isCorrect, feedbackText, effectiveCorrect);
+      await generateAndAppendTeacherResponse(opt, msgsWithUser, false, isCorrect, feedbackText, effectiveCorrect, lostFocus ? 'focus' : undefined);
     } catch (err: any) {
       console.error(err);
       const errorMsg: ChatMessage = { 
@@ -1153,7 +1283,11 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
   // Handle written/text answer - adds user message bubble
   const handleSend = async (manualText?: string) => {
     const userText = manualText || input.trim() || inputRef.current?.value.trim() || '';
-    if (!userText || isLoading || isPaused || activeGame || preparingGame) return;
+    if (!userText || isLoading || isPaused || activeGame || preparingGame || reaskLockRef.current) return;
+
+    const hold = focusLostRef.current ? 'focus' : pastedLongRef.current ? 'paste' : undefined;
+    focusLostRef.current = false;
+    pastedLongRef.current = false;
 
     setInput('');
     if (inputRef.current) inputRef.current.value = '';
@@ -1164,7 +1298,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
 
     try {
       const currentMsgs = [...messages, userMsg];
-      await generateAndAppendTeacherResponse(userText, currentMsgs, false);
+      await generateAndAppendTeacherResponse(userText, currentMsgs, false, undefined, undefined, undefined, hold);
     } catch (err: any) {
       console.error(err);
       const errorMsg: ChatMessage = { 
@@ -1277,7 +1411,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const cleanTags = (raw: string) => raw
       .replace(/\[DATA_LOGICA\][\s\S]*$/g, '')         // cut off at [DATA_LOGICA]
       .replace(/\[\/?(EXPLICACION|EXPRESSION|EXPLANATION)\]/gi, '')
-      .replace(/\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[SOSPECHA_IA\]|\[FUERA_DE_TEMA\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
+      .replace(/\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[SOSPECHA_IA\]|\[FUERA_DE_TEMA\]|\[PERDIO_ENFOQUE\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
       .replace(/\[TEMAS_COMPLETADOS:\s*\d+\]/ig, '')
       .replace(/\*\*Draft\*\*|\*\*Draft/g, '')
       .trim();
@@ -1303,7 +1437,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v3.0.6</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v3.0.7</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
@@ -1513,6 +1647,14 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
                  ref={inputRef}
                  type="text"
                  defaultValue=""
+                 onPaste={(e) => {
+                   const pasted = e.clipboardData?.getData('text') || '';
+                   if (pasted.trim().length >= 80) pastedLongRef.current = true;
+                 }}
+                 onInput={(e) => {
+                   const value = (e.target as HTMLInputElement).value.trim();
+                   if (value.length < 40) pastedLongRef.current = false;
+                 }}
                  onKeyDown={(e) => {
                    if (e.key === 'Enter') {
                      const val = inputRef.current?.value.trim() || '';
