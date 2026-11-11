@@ -28,13 +28,31 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
   return 'Pendiente';
 };
 
-export const auditAndSanitizeStudentLessons = async (username: string) => {
+export const autoUpdateLessonStatuses = async (username: string) => {
   try {
     const cleanUsername = username.trim().toLowerCase();
+
+    // Restaurar inmediatamente cualquier lección que ya tenga créditos transferidos para no tocarla jamás
+    await supabase.from('student_lessons')
+      .update({ completed: true, lesson_status: 'Aprobada' })
+      .ilike('student_username', cleanUsername)
+      .eq('credits_transfered', true);
+
+    // Definir la ventana estricta: Esta semana y la semana pasada (desde el lunes 2 de noviembre de 2026)
+    const now = new Date();
+    const day = (now.getDay() + 6) % 7;
+    const thisMonday = new Date(now);
+    thisMonday.setDate(now.getDate() - day);
+    const lastMonday = new Date(thisMonday);
+    lastMonday.setDate(thisMonday.getDate() - 7);
+    const minDateStr = lastMonday.toISOString().split('T')[0]; // "2026-11-02"
+
+    // SOLO obtener lecciones recientes (de esta semana y la semana pasada)
     const { data: lessons, error } = await supabase
       .from('student_lessons')
       .select('*')
-      .ilike('student_username', cleanUsername);
+      .ilike('student_username', cleanUsername)
+      .gte('date', minDateStr);
 
     if (error || !lessons || lessons.length === 0) return;
 
@@ -82,6 +100,10 @@ export const auditAndSanitizeStudentLessons = async (username: string) => {
     }
 
     for (const row of lessons) {
+      // 1. REGLA ESTRICTA: NUNCA tocar lecciones con créditos transferidos
+      if (row.credits_transfered === true) continue;
+
+      // 2. Solo evaluar si figura como aprobada/completada
       const isClaimedApproved = row.completed === true || row.lesson_status === 'Aprobada' || row.lesson_status === 'Completada' || (row.grade != null && Number(row.grade) >= 6);
       if (!isClaimedApproved) continue;
 
@@ -96,26 +118,21 @@ export const auditAndSanitizeStudentLessons = async (username: string) => {
       const hasChat = candidateIds.some(id => chatClassIdSet.has(id));
       const hasExam = candidateIds.some(id => intentoClassIdSet.has(id));
 
-      // Si afirma estar aprobada pero no tiene historial de clase O no tiene examen aprobado:
+      // Si afirma estar aprobada pero en realidad NO tiene historial de clase O NO tiene examen:
       if (!hasChat || !hasExam) {
-        console.warn(`[Auditoría Estricta] Revertiendo lección sin historial ni examen verificado: ID ${row.id} (${row.topic}) para ${username}`);
+        console.warn(`[Auditoría Reciente] Revirtiendo lección reciente sin historial ni examen verificado: ID ${row.id} (${row.topic}) del ${row.date} para ${username}`);
         await supabase.from('student_lessons').update({
           lesson_status: 'Pendiente',
           completed: false,
           valid_interactions_count: 0,
           grade: 0,
-          bonus_credits: 0,
-          credits_transfered: false
+          bonus_credits: 0
         }).eq('id', String(row.id));
       }
     }
   } catch (err) {
-    console.error("Error en auditAndSanitizeStudentLessons:", err);
+    console.error("Error en autoUpdateLessonStatuses:", err);
   }
-};
-
-export const autoUpdateLessonStatuses = async (username: string) => {
-  await auditAndSanitizeStudentLessons(username);
 };
 
 // --- CUENTAS Y SALDOS (CENTRALIZADOS EN TABLA USERS) ---
@@ -467,9 +484,6 @@ export const getCachedQuestions = async (topic: string): Promise<any | null> => 
 };
 
 export const getStudentData = async (username: string): Promise<StudentData | null> => {
-  // Asegurar que cualquier clase sin historial de clase ni examen sea revertida de inmediato
-  await auditAndSanitizeStudentLessons(username);
-
   const { data, error } = await supabase.from('student_lessons').select('*').ilike('student_username', username);
   if (error) return null;
   const mappedLessons: Lesson[] = (data || []).map(row => {
