@@ -800,22 +800,31 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         ? ' El estudiante se tomó su tiempo. Reconócelo en positivo y refuerza la idea central antes de la pregunta. No agregues preguntas extra por eso.'
         : '';
       const topicTitle = lesson.microtemas?.[completedTopicsRef.current < totalTopics ? completedTopicsRef.current : (totalTopics - 1)]?.titulo || lesson.title;
+      const suspectedAi = lastIsOpen && !!evalResult.sospecha_ia;
+      const offTopic = lastIsOpen && !suspectedAi && !!evalResult.fuera_de_tema;
 
-      if (lastIsOpen && nivel === 'incorrecta') {
+      if (suspectedAi || offTopic) {
         newCorrectAnswers = openBefore ? 1 : 0;
         setCombo(0);
         setMood('oops');
-        teacherContext = `[RESPUESTA_INCORRECTA][SIGUIENTE:ABIERTA] Respondió "${studentAnswer}" a "${lastQuestion}". No avances de tema. Seguimos en "${topicTitle}". Explica con calma qué no alcanzó y refuerza la idea. Luego UNA pregunta ABIERTA nueva, con otro ejemplo de la vida diaria.${slowNote}`;
+        teacherContext = suspectedAi
+          ? `[SOSPECHA_IA][SIGUIENTE:ABIERTA] La respuesta parece escrita por una herramienta de IA. No avances de tema. Seguimos en "${topicTitle}". En UNA frase, pide que la conteste con sus propias palabras, sin sermón y sin repetir un regaño anterior. No des la respuesta. Luego UNA pregunta ABIERTA nueva, parecida, del mismo tema y con otro ejemplo.`
+          : `[FUERA_DE_TEMA][SIGUIENTE:ABIERTA] La respuesta se salió de "${topicTitle}". No avances de tema y no sigas la tangente. En UNA frase, vuelve a enfocar la lección, con trato de adulto. No des la respuesta. Luego UNA pregunta ABIERTA similar sobre el mismo tema.`;
+      } else if (lastIsOpen && nivel === 'incorrecta') {
+        newCorrectAnswers = openBefore ? 1 : 0;
+        setCombo(0);
+        setMood('oops');
+        teacherContext = `[RESPUESTA_INCORRECTA][SIGUIENTE:ABIERTA] Respondió "${studentAnswer}" a "${lastQuestion}". No avances de tema. Seguimos en "${topicTitle}". UNA frase, distinta a las anteriores, sobre qué no alcanzó. Luego UNA pregunta ABIERTA nueva del mismo tema, con otro ejemplo. Trato de adulto.${slowNote}`;
       } else if (lastIsOpen && nivel === 'parcial') {
         newCorrectAnswers = 1;
         setCombo(c => c + 1);
         setMood('happy');
-        teacherContext = `[PARCIAL][SIGUIENTE:MCQ] La respuesta es PARCIAL. Dilo con ánimo: qué sí entendió y qué faltó ("${evalResult.retroalimentacion}"). Refuerza "${topicTitle}" sin repetir toda la clase. La ÚNICA pregunta siguiente es de opción múltiple, para poder avanzar. No hagas otra pregunta abierta.${slowNote}`;
+        teacherContext = `[PARCIAL][SIGUIENTE:MCQ] Parcial: "${evalResult.retroalimentacion}". UNA frase sobre qué faltó, sin repetir la clase ni el mismo elogio. La ÚNICA pregunta siguiente es de opción múltiple de "${topicTitle}". No hagas otra pregunta abierta.${slowNote}`;
       } else if (lastIsOpen) {
         newCorrectAnswers = 1;
         setCombo(c => c + 1);
         setMood('happy');
-        teacherContext = `[SIGUIENTE:MCQ] La respuesta abierta es correcta. ${evalResult.retroalimentacion || 'Feedback breve y positivo.'} Luego UNA opción múltiple de "${topicTitle}" para confirmar y avanzar. No hagas otra pregunta abierta.${slowNote}`;
+        teacherContext = `[SIGUIENTE:MCQ] La respuesta abierta es correcta. ${evalResult.retroalimentacion || 'Una frase corta, distinta a las anteriores.'} Luego UNA opción múltiple de "${topicTitle}". No hagas otra pregunta abierta ni repitas el mismo halago.${slowNote}`;
       } else if (nivel === 'correcta' && openAcceptedNow) {
         newCorrectAnswers = 0;
         newCompletedTopics = Math.min(completedTopicsRef.current + 1, totalTopics);
@@ -978,7 +987,13 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
           setPreloadedMCQs(restMCQs);
           lastAskedMCQExplanationRef.current = nextMCQ.explanation;
           
-          const feedbackText = 'Esa idea quedó. Confírmala con esta pregunta.';
+          const feedbackLines = [
+            'Va. Ciérralo con esta.',
+            'Eso es. Ahora elige la que cuadra.',
+            'Quedó la idea. Una de opciones.',
+            'Bien visto. Confírmalo aquí.',
+          ];
+          const feedbackText = feedbackLines[currentMessages.length % feedbackLines.length];
           
           const localAiText = `[EXPLICACION] ${feedbackText} [/EXPLICACION]\n[DATA_LOGICA] ${JSON.stringify({
             type: 'MCQ',
@@ -1262,7 +1277,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     const cleanTags = (raw: string) => raw
       .replace(/\[DATA_LOGICA\][\s\S]*$/g, '')         // cut off at [DATA_LOGICA]
       .replace(/\[\/?(EXPLICACION|EXPRESSION|EXPLANATION)\]/gi, '')
-      .replace(/\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
+      .replace(/\[RESPUESTA_VALIDA\]|\[RESPUESTA_INCORRECTA\]|\[PLAGIO_IA\]|\[SOSPECHA_IA\]|\[FUERA_DE_TEMA\]|\[MICRO_TEMA_COMPLETADO\]/g, '')
       .replace(/\[TEMAS_COMPLETADOS:\s*\d+\]/ig, '')
       .replace(/\*\*Draft\*\*|\*\*Draft/g, '')
       .trim();
@@ -1288,7 +1303,7 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
     return (
       <div key={index} className="flex justify-start w-full mb-6 relative group">
         <div className="bg-white dark:bg-indigo-900 border-2 border-indigo-50 dark:border-indigo-800 text-indigo-900 dark:text-indigo-100 p-5 rounded-[2rem] rounded-tl-none max-w-[90%] shadow-sm">
-          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v3.0.5</div>
+          <div className="text-[10px] text-gray-400 absolute -top-4 right-2">v3.0.6</div>
           {(displayText || showCards) && (
             <div className={`max-w-none font-medium ${msg.isStreaming ? 'animate-pulse' : ''}`}>
               {!!displayText && (
