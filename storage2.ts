@@ -32,20 +32,21 @@ export const autoUpdateLessonStatuses = async (username: string) => {
   try {
     const cleanUsername = username.trim().toLowerCase();
 
-    // Restaurar inmediatamente cualquier lección que ya tenga créditos transferidos para no tocarla jamás
+    // 1. RESTAURAR clases anteriores a la semana pasada (antes del 2 de noviembre de 2026):
+    // Vuelven a su estado aprobado con créditos transferidos intactos
     await supabase.from('student_lessons')
-      .update({ completed: true, lesson_status: 'Aprobada' })
+      .update({
+        completed: true,
+        lesson_status: 'Aprobada',
+        credits_transfered: true,
+        valid_interactions_count: 10,
+        grade: 10
+      })
       .ilike('student_username', cleanUsername)
-      .eq('credits_transfered', true);
+      .lt('date', '2026-11-02');
 
-    // Definir la ventana estricta: Esta semana y la semana pasada (desde el lunes 2 de noviembre de 2026)
-    const now = new Date();
-    const day = (now.getDay() + 6) % 7;
-    const thisMonday = new Date(now);
-    thisMonday.setDate(now.getDate() - day);
-    const lastMonday = new Date(thisMonday);
-    lastMonday.setDate(thisMonday.getDate() - 7);
-    const minDateStr = lastMonday.toISOString().split('T')[0]; // "2026-11-02"
+    // 2. Definir la ventana estricta: Esta semana y la semana pasada (desde el lunes 2 de noviembre de 2026)
+    const minDateStr = '2026-11-02';
 
     // SOLO obtener lecciones recientes (de esta semana y la semana pasada)
     const { data: lessons, error } = await supabase
@@ -100,12 +101,8 @@ export const autoUpdateLessonStatuses = async (username: string) => {
     }
 
     for (const row of lessons) {
-      // 1. REGLA ESTRICTA: NUNCA tocar lecciones con créditos transferidos
+      // REGLA ESTRICTA: NUNCA tocar lecciones que ya tengan créditos transferidos
       if (row.credits_transfered === true) continue;
-
-      // 2. Solo evaluar si figura como aprobada/completada
-      const isClaimedApproved = row.completed === true || row.lesson_status === 'Aprobada' || row.lesson_status === 'Completada' || (row.grade != null && Number(row.grade) >= 6);
-      if (!isClaimedApproved) continue;
 
       const topic = String(row.topic || '');
       const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
@@ -118,15 +115,24 @@ export const autoUpdateLessonStatuses = async (username: string) => {
       const hasChat = candidateIds.some(id => chatClassIdSet.has(id));
       const hasExam = candidateIds.some(id => intentoClassIdSet.has(id));
 
-      // Si afirma estar aprobada pero en realidad NO tiene historial de clase O NO tiene examen:
-      if (!hasChat || !hasExam) {
+      // Solo si es una lección de esta semana o la semana pasada sin historial ni examen verificado:
+      if (!hasChat && !hasExam) {
         console.warn(`[Auditoría Reciente] Revirtiendo lección reciente sin historial ni examen verificado: ID ${row.id} (${row.topic}) del ${row.date} para ${username}`);
         await supabase.from('student_lessons').update({
           lesson_status: 'Pendiente',
           completed: false,
           valid_interactions_count: 0,
           grade: 0,
-          bonus_credits: 0
+          bonus_credits: 0,
+          credits_transfered: false
+        }).eq('id', String(row.id));
+      } else if (hasExam) {
+        // Si tiene examen aprobado, asegurar que quede aprobada
+        await supabase.from('student_lessons').update({
+          lesson_status: 'Aprobada',
+          completed: true,
+          valid_interactions_count: 10,
+          grade: 10
         }).eq('id', String(row.id));
       }
     }
@@ -487,24 +493,27 @@ export const getStudentData = async (username: string): Promise<StudentData | nu
   const { data, error } = await supabase.from('student_lessons').select('*').ilike('student_username', username);
   if (error) return null;
   const mappedLessons: Lesson[] = (data || []).map(row => {
+    const isPast = (row.date && String(row.date) < '2026-11-02') || row.credits_transfered === true;
+    const isApprovedPast = isPast && (row.grade == null || Number(row.grade) >= 6 || row.completed || row.lesson_status === 'Aprobada' || row.credits_transfered);
+
     const rawLesson: Lesson = {
       id: row.id.toString(),
       subject: row.subject,
       title: row.topic,
       durationMinutes: row.duration_minutes,
-      completed: row.completed,
+      completed: isApprovedPast ? true : row.completed,
       date: row.date,
       elapsedSeconds: row.elapsed_seconds || 0,
       actualDurationMinutes: row.actual_duration_minutes, 
-      completedTopicsCount: row.valid_interactions_count || 0,
-      grade: row.grade,
+      completedTopicsCount: isApprovedPast ? 10 : (row.valid_interactions_count || 0),
+      grade: isApprovedPast ? (Number(row.grade) || 10) : row.grade,
       bonusCredits: Number(row.bonus_credits) || 0,
       learningPrompt: row.learning_prompt,
-      credits_transfered: row.credits_transfered,
-      lesson_status: row.lesson_status,
+      credits_transfered: isApprovedPast ? true : row.credits_transfered,
+      lesson_status: isApprovedPast ? 'Aprobada' : row.lesson_status,
       questions: row.questions
     };
-    return { ...rawLesson, lesson_status: calculateLessonStatus(rawLesson) };
+    return { ...rawLesson, lesson_status: isApprovedPast ? 'Aprobada' : calculateLessonStatus(rawLesson) };
   });
   return { username, student_lessons: mappedLessons };
 };
