@@ -87,6 +87,24 @@ async function intentoBelongsTo(intentoId: unknown, session: SessionUser) {
   return matches(data.estudiante_id, session);
 }
 
+function catalogClassId(value: unknown): string | null {
+  const text = String(value ?? '').trim();
+  return /^[0-9]+$/.test(text) ? text : null;
+}
+
+function quoteOrValue(value: unknown): string {
+  const text = String(value ?? '');
+  if (/[,.():"]/.test(text)) return `"${text.replace(/"/g, '')}"`;
+  return text;
+}
+
+function historyHasContent(value: unknown): boolean {
+  if (value == null) return false;
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  const trimmed = text.trim();
+  return trimmed !== '' && trimmed !== '[]' && trimmed !== 'null';
+}
+
 async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: SessionUser): Promise<{ valid: boolean; reason?: string }> {
   const clean = (lessonIds || []).map((id) => String(id)).filter(Boolean);
   if (clean.length === 0) return { valid: false, reason: 'No hay lecciones seleccionadas.' };
@@ -100,67 +118,116 @@ async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: Sessio
     return { valid: false, reason: 'No se pudieron verificar las lecciones solicitadas.' };
   }
 
-  const studentIdents = identities(session);
+  const studentIdents = Array.from(new Set([
+    ...identities(session),
+    session.id, session.username, session.email
+  ].filter(Boolean).map((v) => String(v))));
 
   for (const l of lessons) {
     const topic = l.topic || 'Lección 0';
     const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
     const lessonNumber = match ? match[1] : topic;
-    const candidates = [String(l.id)];
+    // class_chat_history.class_id es bigint. El id de student_lessons es UUID
+    // y meterlo en el filtro invalida toda la consulta.
+    const candidates: string[] = [];
+
+    const allStudentIdents = Array.from(new Set([
+      ...studentIdents,
+      l.student_username ? String(l.student_username) : null
+    ].filter(Boolean) as string[]));
 
     if (l.subject) {
-      const { data: courses } = await getAdmin()
+      const { data: courses, error: courseError } = await getAdmin()
         .from('courses')
         .select('id')
         .ilike('nombre', l.subject)
         .limit(1);
+      if (courseError) {
+        return { valid: false, reason: `No se pudo ubicar el curso de la lección "${topic}": ${courseError.message}` };
+      }
       const courseId = courses?.[0]?.id;
       if (courseId) {
-        const { data: classes } = await getAdmin()
+        const { data: classes, error: classError } = await getAdmin()
           .from('classes')
           .select('id')
           .eq('course_id', courseId)
           .ilike('titulo', String(lessonNumber))
           .limit(1);
-        if (classes?.[0]?.id) {
-          candidates.push(String(classes[0].id));
+        if (classError) {
+          return { valid: false, reason: `No se pudo ubicar la clase "${topic}": ${classError.message}` };
+        }
+        const classId = catalogClassId(classes?.[0]?.id);
+        if (classId) {
+          candidates.push(classId);
+        } else if (lessonNumber !== topic) {
+          const { data: byTitle, error: titleError } = await getAdmin()
+            .from('classes')
+            .select('id')
+            .eq('course_id', courseId)
+            .ilike('titulo', topic)
+            .limit(1);
+          if (titleError) {
+            return { valid: false, reason: `No se pudo ubicar la clase "${topic}": ${titleError.message}` };
+          }
+          const titleId = catalogClassId(byTitle?.[0]?.id);
+          if (titleId) candidates.push(titleId);
         }
       }
     }
 
-    // 1. Verificar class_chat_history
-    const { data: chats } = await getAdmin()
+    if (candidates.length === 0) {
+      return { valid: false, reason: `La lección "${topic}" no está ligada a una clase del catálogo.` };
+    }
+
+    const orStudentFilter = allStudentIdents.map((id) => `estudiante_id.ilike.${quoteOrValue(id)}`).join(',');
+    const { data: chats, error: chatError } = await getAdmin()
       .from('class_chat_history')
       .select('id, chat_history')
-      .in('estudiante_id', studentIdents)
+      .or(orStudentFilter)
       .in('class_id', candidates)
-      .limit(1);
+      .limit(5);
 
-    const hasChat = chats && chats.length > 0 && chats[0].chat_history && String(chats[0].chat_history).trim() !== '[]';
+    if (chatError) {
+      return { valid: false, reason: `No se pudo leer el historial de la clase "${topic}": ${chatError.message}` };
+    }
+
+    const hasChat = Array.isArray(chats) && chats.some((row: any) => historyHasContent(row.chat_history));
     if (!hasChat) {
       return { valid: false, reason: `La lección "${l.topic || 'Lección'}" no tiene historial de clase completada en el aula virtual.` };
     }
 
-    // 2. Verificar intentos_examen con calificación >= 6
-    const { data: intentos } = await getAdmin()
+    const { data: intentos, error: intentoError } = await getAdmin()
       .from('intentos_examen')
       .select('id, calificacion')
-      .in('estudiante_id', studentIdents)
+      .or(orStudentFilter)
       .in('class_id', candidates)
       .gte('calificacion', 6)
-      .limit(1);
+      .limit(5);
+
+    if (intentoError) {
+      return { valid: false, reason: `No se pudo leer el examen de la lección "${topic}": ${intentoError.message}` };
+    }
 
     if (!intentos || intentos.length === 0) {
       return { valid: false, reason: `La lección "${l.topic || 'Lección'}" no tiene un examen aprobado registrado.` };
     }
 
-    // 3. Verificar que el intento tenga respuestas registradas
-    const { count: respCount } = await getAdmin()
-      .from('respuestas_estudiante')
-      .select('id', { count: 'exact', head: true })
-      .eq('intento_id', String(intentos[0].id));
+    let answered = false;
+    for (const intento of intentos) {
+      const { count: respCount, error: respError } = await getAdmin()
+        .from('respuestas_estudiante')
+        .select('id', { count: 'exact', head: true })
+        .eq('intento_id', String(intento.id));
+      if (respError) {
+        return { valid: false, reason: `No se pudieron leer las respuestas del examen: ${respError.message}` };
+      }
+      if (respCount != null && respCount > 0) {
+        answered = true;
+        break;
+      }
+    }
 
-    if (respCount == null || respCount === 0) {
+    if (!answered) {
       return { valid: false, reason: `El examen de la lección "${l.topic || 'Lección'}" no tiene preguntas ni respuestas registradas.` };
     }
   }
