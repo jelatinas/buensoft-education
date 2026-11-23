@@ -6,6 +6,7 @@ import { clearSessionCookie, readSession, sessionCookie, signSession, tokenFromR
 import { getAdmin } from './supabaseAdmin.ts';
 
 const GOOGLE_CLIENT_ID = '824392318898-gufjs4r3bcm3obb2nvieg99sgcn83kti.apps.googleusercontent.com';
+const ADMIN_EMAIL = 'buensoft@gmail.com';
 
 function send(res: any, status: number, body: unknown, extraHeaders: Record<string, string> = {}) {
   res.statusCode = status;
@@ -45,6 +46,45 @@ async function findLoginUser(identifier: string) {
     : await query.ilike('username', identifier).maybeSingle();
   if (result.error) throw new Error(result.error.message);
   return result.data;
+}
+
+function roleForEmail(email: string): 'ADMIN' | 'STUDENT' {
+  return email === ADMIN_EMAIL ? 'ADMIN' : 'STUDENT';
+}
+
+async function enterWithEmail(res: any, req: any, email: string) {
+  const role = roleForEmail(email);
+  const { data: byEmail } = await getAdmin()
+    .from('users')
+    .select('id, username, email, role, student_profile, preferred_teacher_profile')
+    .ilike('email', email)
+    .maybeSingle();
+  if (byEmail) {
+    if (role === 'ADMIN' && byEmail.role !== 'ADMIN') {
+      const { data: upgraded, error } = await getAdmin()
+        .from('users')
+        .update({ role: 'ADMIN' })
+        .eq('id', byEmail.id)
+        .select('id, username, email, role, student_profile, preferred_teacher_profile')
+        .single();
+      if (error || !upgraded) return send(res, 400, { error: error?.message || 'No se pudo abrir la cuenta de administrador.' });
+      return withSession(res, req, upgraded);
+    }
+    return withSession(res, req, byEmail);
+  }
+  const baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') || 'estudiante';
+  const { data: byName } = await getAdmin().from('users').select('id').ilike('username', baseUsername).maybeSingle();
+  const username = byName ? `${baseUsername}_${Math.floor(100 + Math.random() * 900)}` : baseUsername;
+  const password = await hashPassword(crypto.randomBytes(24).toString('hex'));
+  const { data: created, error } = await getAdmin().from('users').insert({
+    username,
+    email,
+    password,
+    role,
+    balance: 0,
+  }).select('id, username, email, role, student_profile, preferred_teacher_profile').single();
+  if (error || !created) return send(res, 400, { error: error?.message || 'No se pudo crear la cuenta.' });
+  return withSession(res, req, created);
 }
 
 export async function handleAuth(req: any, res: any) {
@@ -128,22 +168,7 @@ export async function handleAuth(req: any, res: any) {
       if (!verify.ok || !payload?.email) {
         return send(res, 401, { error: payload?.error || 'No se pudo entrar con el workspace.' });
       }
-      const email = String(payload.email).trim().toLowerCase();
-      const { data: byEmail } = await getAdmin().from('users').select('id, username, email, role, student_profile, preferred_teacher_profile').ilike('email', email).maybeSingle();
-      if (byEmail) return withSession(res, req, byEmail);
-      const baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') || 'estudiante';
-      const { data: byName } = await getAdmin().from('users').select('id').ilike('username', baseUsername).maybeSingle();
-      const username = byName ? `${baseUsername}_${Math.floor(100 + Math.random() * 900)}` : baseUsername;
-      const password = await hashPassword(crypto.randomBytes(24).toString('hex'));
-      const { data: created, error } = await getAdmin().from('users').insert({
-        username,
-        email,
-        password,
-        role: 'STUDENT',
-        balance: 0,
-      }).select('id, username, email, role, student_profile, preferred_teacher_profile').single();
-      if (error || !created) return send(res, 400, { error: error?.message || 'No se pudo crear la cuenta.' });
-      return withSession(res, req, created);
+      return enterWithEmail(res, req, String(payload.email).trim().toLowerCase());
     }
 
     if (action === 'google') {
@@ -154,22 +179,7 @@ export async function handleAuth(req: any, res: any) {
       if (!infoRes.ok || info?.aud !== GOOGLE_CLIENT_ID || !verified || !info?.email) {
         return send(res, 401, { error: 'Google no pudo verificar la cuenta.' });
       }
-      const email = String(info.email).trim().toLowerCase();
-      const { data: byEmail } = await getAdmin().from('users').select('id, username, email, role, student_profile, preferred_teacher_profile').ilike('email', email).maybeSingle();
-      if (byEmail) return withSession(res, req, byEmail);
-      const baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') || 'estudiante';
-      const { data: byName } = await getAdmin().from('users').select('id').ilike('username', baseUsername).maybeSingle();
-      const username = byName ? `${baseUsername}_${Math.floor(100 + Math.random() * 900)}` : baseUsername;
-      const password = await hashPassword(crypto.randomBytes(24).toString('hex'));
-      const { data: created, error } = await getAdmin().from('users').insert({
-        username,
-        email,
-        password,
-        role: 'STUDENT',
-        balance: 0,
-      }).select('id, username, email, role, student_profile, preferred_teacher_profile').single();
-      if (error || !created) return send(res, 400, { error: error?.message || 'No se pudo crear la cuenta.' });
-      return withSession(res, req, created);
+      return enterWithEmail(res, req, String(info.email).trim().toLowerCase());
     }
 
     if (action === 'change-password') {
