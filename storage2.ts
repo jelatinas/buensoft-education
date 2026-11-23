@@ -1494,6 +1494,12 @@ export const loginOrRegisterWithGoogle = async (credential: string): Promise<Use
   return result.user;
 };
 
+export const loginWithWorkspace = async (token: string): Promise<User> => {
+  const result = await authRequest({ action: 'workspace', token });
+  if (!result?.user) throw new Error(result?.error || 'No se pudo entrar con el workspace.');
+  return result.user;
+};
+
 export const registerStudent = async (username: string, password?: string, email?: string): Promise<User> => {
   const result = await authRequest({
     action: 'register',

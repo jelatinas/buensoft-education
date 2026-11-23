@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { User, Role } from './types.ts';
-import { initStorage, autoUpdateLessonStatuses, updateUserSession, getAccountBalance, restoreSession, getOwnAccountSnapshot, logoutSession, changeOwnPassword } from './storage2.ts';
+import { initStorage, autoUpdateLessonStatuses, updateUserSession, getAccountBalance, restoreSession, getOwnAccountSnapshot, logoutSession, changeOwnPassword, loginWithWorkspace } from './storage2.ts';
 import Login from './components/Login.tsx';
 import AdminDashboard from './components/AdminDashboard.tsx';
 import StudentDashboard from './components/StudentDashboard.tsx';
@@ -70,6 +70,29 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadApp = async () => {
       await initStorage();
+      const params = new URLSearchParams(window.location.search);
+      const entry = params.get('entrada') || '';
+      if (/^[A-Za-z0-9_-]{20,}$/.test(entry)) {
+        params.delete('entrada');
+        const query = params.toString();
+        window.history.replaceState(null, '', window.location.pathname + (query ? `?${query}` : '') + window.location.hash);
+        try {
+          const entered = await loginWithWorkspace(entry);
+          const safeUser = { ...entered };
+          delete safeUser.password;
+          localStorage.setItem('current_user', JSON.stringify(safeUser));
+          setCurrentUser(safeUser);
+          if (safeUser.role === Role.STUDENT) {
+            await autoUpdateLessonStatuses(safeUser.username);
+            fetchUserBalance(safeUser);
+            updateUserSession(safeUser.username, tabSessionId);
+          }
+          setIsInitializing(false);
+          return;
+        } catch (error) {
+          console.error(error);
+        }
+      }
       const user = await restoreSession();
       if (user) {
         const safeUser = { ...user };

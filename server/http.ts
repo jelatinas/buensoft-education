@@ -117,6 +117,35 @@ export async function handleAuth(req: any, res: any) {
       return withSession(res, req, data);
     }
 
+    if (action === 'workspace') {
+      const token = String(body.token || '');
+      const verify = await fetch('https://buensoft.com/workspace/api/evalua.php', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ action: 'redeem', code: token }),
+      });
+      const payload = await verify.json().catch(() => ({}));
+      if (!verify.ok || !payload?.email) {
+        return send(res, 401, { error: payload?.error || 'No se pudo entrar con el workspace.' });
+      }
+      const email = String(payload.email).trim().toLowerCase();
+      const { data: byEmail } = await getAdmin().from('users').select('id, username, email, role, student_profile, preferred_teacher_profile').ilike('email', email).maybeSingle();
+      if (byEmail) return withSession(res, req, byEmail);
+      const baseUsername = email.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') || 'estudiante';
+      const { data: byName } = await getAdmin().from('users').select('id').ilike('username', baseUsername).maybeSingle();
+      const username = byName ? `${baseUsername}_${Math.floor(100 + Math.random() * 900)}` : baseUsername;
+      const password = await hashPassword(crypto.randomBytes(24).toString('hex'));
+      const { data: created, error } = await getAdmin().from('users').insert({
+        username,
+        email,
+        password,
+        role: 'STUDENT',
+        balance: 0,
+      }).select('id, username, email, role, student_profile, preferred_teacher_profile').single();
+      if (error || !created) return send(res, 400, { error: error?.message || 'No se pudo crear la cuenta.' });
+      return withSession(res, req, created);
+    }
+
     if (action === 'google') {
       const credential = String(body.credential || '');
       const infoRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`);
