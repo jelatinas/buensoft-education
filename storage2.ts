@@ -29,7 +29,6 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
 };
 
 const RECENT_LESSON_WINDOW_START = '2026-11-02';
-const RECENT_LESSON_WINDOW_END = '2026-11-16';
 
 const lessonClaimsApproval = (row: { completed?: boolean; lesson_status?: string; grade?: number | null }) =>
   row.completed === true ||
@@ -37,23 +36,43 @@ const lessonClaimsApproval = (row: { completed?: boolean; lesson_status?: string
   row.lesson_status === 'Completada' ||
   (row.grade != null && Number(row.grade) >= 6);
 
-const historyHasMessages = (chatHistory: unknown) => {
-  const text = String(chatHistory ?? '').trim();
-  return text !== '' && text !== '[]' && text !== 'null';
+const countUserTurnsInHistory = (chatHistory: unknown): number => {
+  if (chatHistory == null) return 0;
+  let messages: any[] = [];
+  if (Array.isArray(chatHistory)) {
+    messages = chatHistory;
+  } else {
+    const text = String(chatHistory).trim();
+    if (!text || text === '[]' || text === 'null') return 0;
+    try {
+      const parsed = JSON.parse(text);
+      if (Array.isArray(parsed)) messages = parsed;
+    } catch {
+      return 0;
+    }
+  }
+  return messages.filter(msg => {
+    if (!msg || typeof msg !== 'object') return false;
+    if (String(msg.role || '').toLowerCase() !== 'user') return false;
+    const parts = Array.isArray(msg.parts) ? msg.parts : [];
+    const content = parts.map((p: any) => String(p?.text || '')).join(' ').trim();
+    return content.length > 0;
+  }).length;
 };
 
 /**
- * Corrige solo las lecciones del 2 al 15 de noviembre de 2026 (semana pasada y esta semana).
- * No modifica lecciones con créditos ya transferidos ni lecciones que sí tienen historial o examen.
+ * Audita las lecciones desde el 2 de noviembre de 2026 en adelante.
+ * No modifica lecciones con créditos ya transferidos.
+ * Si una lección aparece completada/aprobada pero le falta historial con los 10 temas completados
+ * o le falta un intento de examen aprobado, se revierte a Pendiente.
  * Si la consulta de evidencia falla, no revierte nada.
  */
 const revertUnverifiedRecentLessons = async (username: string) => {
   const { data: lessons, error } = await supabase
     .from('student_lessons')
-    .select('id, subject, topic, date, completed, lesson_status, grade, credits_transfered')
+    .select('id, subject, topic, date, completed, lesson_status, grade, valid_interactions_count, credits_transfered')
     .ilike('student_username', username)
-    .gte('date', RECENT_LESSON_WINDOW_START)
-    .lt('date', RECENT_LESSON_WINDOW_END);
+    .gte('date', RECENT_LESSON_WINDOW_START);
 
   if (error) {
     console.error('No se auditaron lecciones recientes porque falló la consulta:', error.message);
@@ -100,11 +119,12 @@ const revertUnverifiedRecentLessons = async (username: string) => {
     return;
   }
 
-  const chatClassIdSet = new Set(
-    [...(chatsByUsername || []), ...(chatsById || [])]
-      .filter(row => historyHasMessages(row.chat_history))
-      .map(row => String(row.class_id))
-  );
+  const chatTurnsByClassId = new Map<string, number>();
+  for (const row of [...(chatsByUsername || []), ...(chatsById || [])]) {
+    const key = String(row.class_id);
+    const turns = countUserTurnsInHistory(row.chat_history);
+    chatTurnsByClassId.set(key, Math.max(chatTurnsByClassId.get(key) || 0, turns));
+  }
   const examClassIdSet = new Set(
     [...(examsByUsername || []), ...(examsById || [])].map(row => String(row.class_id))
   );
@@ -146,12 +166,14 @@ const revertUnverifiedRecentLessons = async (username: string) => {
       console.warn(`[Auditoría reciente] No se revierte la lección ${row.id} (${row.topic}): no se encontró su clase en el catálogo.`);
       continue;
     }
+    const requiredTopics = 10;
     const candidateIds = [String(row.id), resolvedClassId];
-    const hasChat = candidateIds.some(id => chatClassIdSet.has(id));
+    const maxUserTurns = Math.max(...candidateIds.map(id => chatTurnsByClassId.get(id) || 0));
+    const hasCompletedTopics = Number(row.valid_interactions_count || 0) >= requiredTopics && maxUserTurns >= requiredTopics;
     const hasExam = candidateIds.some(id => examClassIdSet.has(id));
-    if (hasChat || hasExam) continue;
+    if (hasCompletedTopics && hasExam) continue;
 
-    console.warn(`[Auditoría reciente] Revirtiendo lección sin historial ni examen: ID ${row.id} (${row.topic}) del ${row.date} para ${username}`);
+    console.warn(`[Auditoría reciente] Revirtiendo lección sin evidencia completa (temas=${row.valid_interactions_count || 0}, turnos=${maxUserTurns}, examen=${hasExam}): ID ${row.id} (${row.topic}) del ${row.date} para ${username}`);
     const { error: updateError } = await supabase.from('student_lessons').update({
       lesson_status: 'Pendiente',
       completed: false,
@@ -165,7 +187,6 @@ const revertUnverifiedRecentLessons = async (username: string) => {
 
 export const autoUpdateLessonStatuses = async (username: string) => {
   try {
-    await supabase.from('student_lessons').update({ lesson_status: 'Aprobada', completed: true }).ilike('student_username', username).gte('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
     await supabase.from('student_lessons').update({ lesson_status: 'Reprobada', completed: false }).ilike('student_username', username).gt('grade', 0).lt('grade', 6).in('lesson_status', ['Pendiente', 'En Progreso']);
     await supabase.from('student_lessons').update({ lesson_status: 'En Progreso' }).ilike('student_username', username).or('grade.is.null,grade.eq.0').gt('valid_interactions_count', 0).in('lesson_status', ['Pendiente']);
     await revertUnverifiedRecentLessons(username);
