@@ -30,6 +30,15 @@ const calculateLessonStatus = (lesson: Partial<Lesson>): 'Pendiente' | 'En Progr
 
 const RECENT_LESSON_WINDOW_START = '2026-11-02';
 
+const toNumericClassIds = (values: (string | number | null | undefined)[]): string[] =>
+  Array.from(
+    new Set(
+      values
+        .map(v => String(v ?? '').trim())
+        .filter(v => /^[0-9]+$/.test(v))
+    )
+  );
+
 const lessonClaimsApproval = (row: { completed?: boolean; lesson_status?: string; grade?: number | null }) =>
   row.completed === true ||
   row.lesson_status === 'Aprobada' ||
@@ -108,15 +117,33 @@ const revertUnverifiedRecentLessons = async (username: string) => {
 
   const { data: examsByUsername, error: examUserError } = await supabase
     .from('intentos_examen')
-    .select('class_id, calificacion')
+    .select('id, class_id, calificacion')
     .ilike('estudiante_id', username)
     .gte('calificacion', 6);
   const { data: examsById, error: examIdError } = studentId
-    ? await supabase.from('intentos_examen').select('class_id, calificacion').eq('estudiante_id', studentId).gte('calificacion', 6)
+    ? await supabase.from('intentos_examen').select('id, class_id, calificacion').eq('estudiante_id', studentId).gte('calificacion', 6)
     : { data: [], error: null };
   if (examUserError || examIdError) {
     console.error('No se auditaron lecciones recientes porque falló la consulta de exámenes.');
     return;
+  }
+
+  const allApprovedExams = [...(examsByUsername || []), ...(examsById || [])];
+  const approvedIntentoIds = Array.from(new Set(allApprovedExams.map(row => String(row.id)).filter(Boolean)));
+  const answeredCountByIntento = new Map<string, number>();
+  if (approvedIntentoIds.length > 0) {
+    const { data: respuestas, error: respError } = await supabase
+      .from('respuestas_estudiante')
+      .select('intento_id')
+      .in('intento_id', approvedIntentoIds);
+    if (respError) {
+      console.error('No se auditaron lecciones recientes porque falló la consulta de respuestas de examen.');
+      return;
+    }
+    for (const r of respuestas || []) {
+      const key = String(r.intento_id);
+      answeredCountByIntento.set(key, (answeredCountByIntento.get(key) || 0) + 1);
+    }
   }
 
   const chatTurnsByClassId = new Map<string, number>();
@@ -126,7 +153,9 @@ const revertUnverifiedRecentLessons = async (username: string) => {
     chatTurnsByClassId.set(key, Math.max(chatTurnsByClassId.get(key) || 0, turns));
   }
   const examClassIdSet = new Set(
-    [...(examsByUsername || []), ...(examsById || [])].map(row => String(row.class_id))
+    allApprovedExams
+      .filter(row => (answeredCountByIntento.get(String(row.id)) || 0) >= 4)
+      .map(row => String(row.class_id))
   );
 
   const subjects = Array.from(new Set(suspicious.map(row => String(row.subject || 'General').trim().toLowerCase())));
@@ -843,18 +872,28 @@ export const getLeccionById = async (id: string | number): Promise<any | null> =
 };
 
 export const getClassChatHistory = async (lessonId: string | number, studentId: string, studentUsername?: string, altLessonId?: string | number): Promise<any | null> => {
-  const idList = [String(lessonId), altLessonId ? String(altLessonId) : null].filter(Boolean) as string[];
-  const studentList = [String(studentId), studentUsername ? String(studentUsername) : null].filter(Boolean) as string[];
+  const idList = toNumericClassIds([lessonId, altLessonId]);
+  if (idList.length === 0) return null;
 
-  const { data, error } = await supabase
-    .from('class_chat_history')
-    .select('*')
-    .in('class_id', idList)
-    .in('estudiante_id', studentList)
-    .limit(1);
+  const studentList = Array.from(new Set([studentId, studentUsername].map(v => String(v ?? '').trim()).filter(Boolean)));
+  if (studentList.length === 0) return null;
 
-  if (error || !data || data.length === 0) return null;
-  return data[0];
+  const queries = studentList.map(ident =>
+    supabase
+      .from('class_chat_history')
+      .select('*')
+      .in('class_id', idList)
+      .ilike('estudiante_id', ident)
+      .order('updated_at', { ascending: false })
+      .limit(1)
+  );
+  const results = await Promise.all(queries);
+  for (const res of results) {
+    if (!res.error && Array.isArray(res.data) && res.data.length > 0) {
+      return res.data[0];
+    }
+  }
+  return null;
 };
 
 export const saveClassChatHistory = async (lessonId: string | number, studentId: string, content: string) => {
@@ -1243,19 +1282,23 @@ export const getAuditStatusesBulk = async (studentId: string, studentUsername: s
   try {
     if (lessons.length === 0) return {};
 
-    // 1. Resolve all class_ids in bulk
-    const subjects = Array.from(new Set(lessons.map(l => l.subject || 'General')));
+    // 1. Resolve all class_ids in bulk (case-insensitive)
+    const subjectKeys = Array.from(new Set(lessons.map(l => String(l.subject || 'General').trim().toLowerCase())));
     
     // Get all materias
     const { data: materias } = await supabase
       .from('courses')
-      .select('id, nombre')
-      .in('nombre', subjects);
+      .select('id, nombre');
     
     if (!materias) return {};
     
-    const materiaMap = new Map(materias.map(m => [m.nombre, m.id]));
+    const materiaMap = new Map<string, string | number>();
+    materias.forEach(m => {
+      const key = String(m.nombre || '').trim().toLowerCase();
+      if (subjectKeys.includes(key)) materiaMap.set(key, m.id);
+    });
     const materiaIds = Array.from(materiaMap.values());
+    if (materiaIds.length === 0) return {};
 
     // Get all lecciones for these materias
     const { data: allLecciones } = await supabase
@@ -1265,38 +1308,41 @@ export const getAuditStatusesBulk = async (studentId: string, studentUsername: s
     
     if (!allLecciones) return {};
 
-    const classMap = new Map();
+    const classMap = new Map<string, string>();
     allLecciones.forEach(l => {
-      classMap.set(`${l.course_id}_${l.titulo}`, l.id);
+      classMap.set(`${l.course_id}_${String(l.titulo || '').trim().toLowerCase()}`, String(l.id));
     });
 
     const resolvedIds: (string | null)[] = lessons.map(l => {
-      const topic = l.title || 'Lección 0';
-      const match = topic.match(/(?:Lección|Lesson)\s+(\d+)/i);
-      const lessonNumber = match ? match[1] : topic;
-      const materiaId = materiaMap.get(l.subject || 'General');
+      const topic = String(l.title || 'Lección 0');
+      const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
+      const lessonNumber = (match ? match[1] : topic).trim().toLowerCase();
+      const topicKey = topic.trim().toLowerCase();
+      const materiaId = materiaMap.get(String(l.subject || 'General').trim().toLowerCase());
       if (!materiaId) return null;
-      return classMap.get(`${materiaId}_${lessonNumber}`) || null;
+      return classMap.get(`${materiaId}_${lessonNumber}`) || classMap.get(`${materiaId}_${topicKey}`) || null;
     });
 
     const validClassIds = resolvedIds.filter((id): id is string => id !== null);
     if (validClassIds.length === 0) return {};
 
-        // 2. Fetch all class_chat_history for this student (buscar por UUID y por Username)
-    const studentIdentifiers = Array.from(new Set([studentId, studentUsername].filter(Boolean)));
-    const { data: geminiLessons } = await supabase
-      .from('class_chat_history')
-      .select('class_id')
-      .in('estudiante_id', studentIdentifiers);
+    // 2. Fetch all class_chat_history and intentos_examen for this student (case-insensitive, UUID + Username)
+    const studentIdentifiers = Array.from(new Set([studentId, studentUsername].map(v => String(v ?? '').trim()).filter(Boolean)));
+    const [chatResults, examResults] = await Promise.all([
+      Promise.all(studentIdentifiers.map(ident =>
+        supabase.from('class_chat_history').select('class_id').ilike('estudiante_id', ident)
+      )),
+      Promise.all(studentIdentifiers.map(ident =>
+        supabase.from('intentos_examen').select('class_id').ilike('estudiante_id', ident)
+      ))
+    ]);
 
-    // 3. Fetch all intentos_examen for this student (buscar por UUID y por Username)
-    const { data: intentos } = await supabase
-      .from('intentos_examen')
-      .select('class_id')
-      .in('estudiante_id', studentIdentifiers);
-
-    const geminiSet = new Set(geminiLessons?.map(gl => String(gl.class_id)) || []);
-    const intentosSet = new Set(intentos?.map(i => String(i.class_id)) || []);
+    const geminiSet = new Set(
+      chatResults.flatMap(r => (!r.error && Array.isArray(r.data) ? r.data : [])).map(gl => String(gl.class_id))
+    );
+    const intentosSet = new Set(
+      examResults.flatMap(r => (!r.error && Array.isArray(r.data) ? r.data : [])).map(i => String(i.class_id))
+    );
 
     const results: Record<string, { hasGeminiLesson: boolean, hasExamAttempts: boolean }> = {};
     
@@ -1403,30 +1449,34 @@ export const updateSetting = async (key: string, value: string) => {
 export const checkAuditStatus = async (studentId: string, studentUsername: string, lesson: Lesson) => {
   try {
     const classId = await getClassIdFromLesson(lesson);
-    const possibleClassIds = Array.from(new Set([classId ? String(classId) : null, lesson.id ? String(lesson.id) : null].filter(Boolean) as string[]));
+    const possibleClassIds = toNumericClassIds([classId]);
     if (possibleClassIds.length === 0) return { hasGeminiLesson: false, hasExamAttempts: false };
 
-    const studentIdents = Array.from(new Set([studentId, studentUsername].filter(Boolean) as string[]));
+    const studentIdents = Array.from(new Set([studentId, studentUsername].map(v => String(v ?? '').trim()).filter(Boolean)));
+    if (studentIdents.length === 0) return { hasGeminiLesson: false, hasExamAttempts: false };
 
-    // Check class_chat_history
-    const { data: geminiLesson } = await supabase
-      .from('class_chat_history')
-      .select('id')
-      .in('class_id', possibleClassIds)
-      .in('estudiante_id', studentIdents)
-      .limit(1);
-    
-    // Check intentos_examen
-    const { data: intentos } = await supabase
-      .from('intentos_examen')
-      .select('id')
-      .in('estudiante_id', studentIdents)
-      .in('class_id', possibleClassIds)
-      .limit(1);
-      
+    const [chatResults, examResults] = await Promise.all([
+      Promise.all(studentIdents.map(ident =>
+        supabase
+          .from('class_chat_history')
+          .select('id')
+          .in('class_id', possibleClassIds)
+          .ilike('estudiante_id', ident)
+          .limit(1)
+      )),
+      Promise.all(studentIdents.map(ident =>
+        supabase
+          .from('intentos_examen')
+          .select('id')
+          .in('class_id', possibleClassIds)
+          .ilike('estudiante_id', ident)
+          .limit(1)
+      ))
+    ]);
+
     return {
-      hasGeminiLesson: !!geminiLesson && geminiLesson.length > 0,
-      hasExamAttempts: !!intentos && intentos.length > 0
+      hasGeminiLesson: chatResults.some(r => !r.error && Array.isArray(r.data) && r.data.length > 0),
+      hasExamAttempts: examResults.some(r => !r.error && Array.isArray(r.data) && r.data.length > 0)
     };
   } catch (err) {
     console.error("Error checking audit status:", err);
@@ -1435,19 +1485,32 @@ export const checkAuditStatus = async (studentId: string, studentUsername: strin
 };
 
 export const getIntentosExamen = async (estudianteId: string, classId: string | number, altStudentId?: string, altClassId?: string | number): Promise<IntentoExamen[]> => {
-  const idList = Array.from(new Set([String(classId), altClassId ? String(altClassId) : null].filter(Boolean) as string[]));
-  const studentList = Array.from(new Set([String(estudianteId), altStudentId ? String(altStudentId) : null].filter(Boolean) as string[]));
+  const idList = toNumericClassIds([classId, altClassId]);
+  if (idList.length === 0) return [];
 
-  const result = await supabase
-    .from('intentos_examen')
-    .select('*')
-    .in('estudiante_id', studentList)
-    .in('class_id', idList)
-    .order('fecha_inicio', { ascending: false });
+  const studentList = Array.from(new Set([estudianteId, altStudentId].map(v => String(v ?? '').trim()).filter(Boolean)));
+  if (studentList.length === 0) return [];
 
-  if (!result.error) return result.data || [];
-  
-  return [];
+  const results = await Promise.all(studentList.map(ident =>
+    supabase
+      .from('intentos_examen')
+      .select('*')
+      .ilike('estudiante_id', ident)
+      .in('class_id', idList)
+      .order('fecha_inicio', { ascending: false })
+  ));
+
+  const byId = new Map<string, IntentoExamen>();
+  for (const res of results) {
+    if (!res.error && Array.isArray(res.data)) {
+      for (const row of res.data) {
+        byId.set(String(row.id), row);
+      }
+    }
+  }
+  return Array.from(byId.values()).sort((a, b) =>
+    new Date(b.fecha_inicio || 0).getTime() - new Date(a.fecha_inicio || 0).getTime()
+  );
 };
 
 

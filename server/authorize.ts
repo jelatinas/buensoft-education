@@ -121,10 +121,19 @@ function parseChatMessages(value: unknown): any[] {
   return [];
 }
 
-function historyHasCompletedTopics(value: unknown, requiredTopics: number): boolean {
+function isTruthyCompleted(value: unknown): boolean {
+  return value === true || value === 1 || String(value ?? '').trim().toLowerCase() === 'true';
+}
+
+function isApprovalStatus(value: unknown): boolean {
+  const status = String(value ?? '').trim().toLowerCase();
+  return status === 'aprobada' || status === 'completada';
+}
+
+function countUserTurns(value: unknown): number {
   const messages = parseChatMessages(value);
-  if (messages.length === 0) return false;
-  const userTurns = messages.filter((msg) => {
+  if (messages.length === 0) return 0;
+  return messages.filter((msg) => {
     if (!msg || typeof msg !== 'object') return false;
     const role = String(msg.role || '').toLowerCase();
     if (role !== 'user') return false;
@@ -132,10 +141,106 @@ function historyHasCompletedTopics(value: unknown, requiredTopics: number): bool
     const text = parts.map((p: any) => String(p?.text || '')).join(' ').trim();
     return text.length > 0;
   }).length;
-  return userTurns >= requiredTopics;
 }
 
-async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: SessionUser): Promise<{ valid: boolean; reason?: string }> {
+function historyHasCompletedTopics(value: unknown, requiredTopics: number): boolean {
+  return countUserTurns(value) >= requiredTopics;
+}
+
+async function resolveCatalogClassIdsForLesson(lesson: { topic?: string; subject?: string }): Promise<{ candidates: string[]; error?: string }> {
+  const topic = lesson.topic || 'Lección 0';
+  const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
+  const lessonNumber = match ? match[1] : topic;
+  // class_chat_history.class_id es bigint. El id de student_lessons es UUID
+  // y meterlo en el filtro invalida toda la consulta.
+  const candidates: string[] = [];
+
+  if (lesson.subject) {
+    const { data: courses, error: courseError } = await getAdmin()
+      .from('courses')
+      .select('id')
+      .ilike('nombre', lesson.subject)
+      .limit(1);
+    if (courseError) {
+      return { candidates: [], error: `No se pudo ubicar el curso de la lección "${topic}": ${courseError.message}` };
+    }
+    const courseId = courses?.[0]?.id;
+    if (courseId) {
+      const { data: classes, error: classError } = await getAdmin()
+        .from('classes')
+        .select('id')
+        .eq('course_id', courseId)
+        .ilike('titulo', String(lessonNumber))
+        .limit(1);
+      if (classError) {
+        return { candidates: [], error: `No se pudo ubicar la clase "${topic}": ${classError.message}` };
+      }
+      const classId = catalogClassId(classes?.[0]?.id);
+      if (classId) {
+        candidates.push(classId);
+      } else if (lessonNumber !== topic) {
+        const { data: byTitle, error: titleError } = await getAdmin()
+          .from('classes')
+          .select('id')
+          .eq('course_id', courseId)
+          .ilike('titulo', topic)
+          .limit(1);
+        if (titleError) {
+          return { candidates: [], error: `No se pudo ubicar la clase "${topic}": ${titleError.message}` };
+        }
+        const titleId = catalogClassId(byTitle?.[0]?.id);
+        if (titleId) candidates.push(titleId);
+      }
+    }
+  }
+
+  return { candidates };
+}
+
+async function getMaxChatUserTurnsForLessons(lessonIds: unknown[], session: SessionUser): Promise<number> {
+  const clean = (lessonIds || []).map((id) => String(id)).filter(Boolean);
+  if (clean.length === 0) return 0;
+
+  const { data: lessons, error } = await getAdmin()
+    .from('student_lessons')
+    .select('id, student_username, topic, subject')
+    .in('id', clean);
+  if (error || !lessons || lessons.length === 0) return 0;
+
+  const studentIdents = Array.from(new Set([
+    ...identities(session),
+    session.id, session.username, session.email
+  ].filter(Boolean).map((v) => String(v))));
+
+  let minTurnsAcrossLessons = Infinity;
+  for (const l of lessons) {
+    const resolved = await resolveCatalogClassIdsForLesson(l);
+    if (resolved.error || resolved.candidates.length === 0) {
+      minTurnsAcrossLessons = 0;
+      continue;
+    }
+    const allStudentIdents = Array.from(new Set([
+      ...studentIdents,
+      l.student_username ? String(l.student_username) : null
+    ].filter(Boolean) as string[]));
+    const orStudentFilter = allStudentIdents.map((id) => `estudiante_id.ilike.${quoteOrValue(id)}`).join(',');
+    const { data: chats, error: chatError } = await getAdmin()
+      .from('class_chat_history')
+      .select('chat_history')
+      .or(orStudentFilter)
+      .in('class_id', resolved.candidates)
+      .limit(5);
+    if (chatError || !Array.isArray(chats) || chats.length === 0) {
+      minTurnsAcrossLessons = 0;
+      continue;
+    }
+    const bestTurns = Math.max(0, ...chats.map((row: any) => countUserTurns(row.chat_history)));
+    minTurnsAcrossLessons = Math.min(minTurnsAcrossLessons, bestTurns);
+  }
+  return Number.isFinite(minTurnsAcrossLessons) ? minTurnsAcrossLessons : 0;
+}
+
+async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: SessionUser): Promise<{ valid: boolean; reason?: string; maxGradesByLessonId?: Map<string, number> }> {
   const clean = (lessonIds || []).map((id) => String(id)).filter(Boolean);
   if (clean.length === 0) return { valid: false, reason: 'No hay lecciones seleccionadas.' };
 
@@ -153,57 +258,20 @@ async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: Sessio
     session.id, session.username, session.email
   ].filter(Boolean).map((v) => String(v))));
 
+  const maxGradesByLessonId = new Map<string, number>();
+
   for (const l of lessons) {
     const topic = l.topic || 'Lección 0';
-    const match = topic.match(/(?:Lecci[oó]n|Lesson)\s+(\d+)/i);
-    const lessonNumber = match ? match[1] : topic;
-    // class_chat_history.class_id es bigint. El id de student_lessons es UUID
-    // y meterlo en el filtro invalida toda la consulta.
-    const candidates: string[] = [];
+    const resolved = await resolveCatalogClassIdsForLesson(l);
+    if (resolved.error) {
+      return { valid: false, reason: resolved.error };
+    }
+    const candidates = resolved.candidates;
 
     const allStudentIdents = Array.from(new Set([
       ...studentIdents,
       l.student_username ? String(l.student_username) : null
     ].filter(Boolean) as string[]));
-
-    if (l.subject) {
-      const { data: courses, error: courseError } = await getAdmin()
-        .from('courses')
-        .select('id')
-        .ilike('nombre', l.subject)
-        .limit(1);
-      if (courseError) {
-        return { valid: false, reason: `No se pudo ubicar el curso de la lección "${topic}": ${courseError.message}` };
-      }
-      const courseId = courses?.[0]?.id;
-      if (courseId) {
-        const { data: classes, error: classError } = await getAdmin()
-          .from('classes')
-          .select('id')
-          .eq('course_id', courseId)
-          .ilike('titulo', String(lessonNumber))
-          .limit(1);
-        if (classError) {
-          return { valid: false, reason: `No se pudo ubicar la clase "${topic}": ${classError.message}` };
-        }
-        const classId = catalogClassId(classes?.[0]?.id);
-        if (classId) {
-          candidates.push(classId);
-        } else if (lessonNumber !== topic) {
-          const { data: byTitle, error: titleError } = await getAdmin()
-            .from('classes')
-            .select('id')
-            .eq('course_id', courseId)
-            .ilike('titulo', topic)
-            .limit(1);
-          if (titleError) {
-            return { valid: false, reason: `No se pudo ubicar la clase "${topic}": ${titleError.message}` };
-          }
-          const titleId = catalogClassId(byTitle?.[0]?.id);
-          if (titleId) candidates.push(titleId);
-        }
-      }
-    }
 
     if (candidates.length === 0) {
       return { valid: false, reason: `La lección "${topic}" no está ligada a una clase del catálogo.` };
@@ -249,7 +317,8 @@ async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: Sessio
       .or(orStudentFilter)
       .in('class_id', candidates)
       .gte('calificacion', 6)
-      .limit(5);
+      .order('calificacion', { ascending: false })
+      .limit(10);
 
     if (intentoError) {
       return { valid: false, reason: `No se pudo leer el examen de la lección "${topic}": ${intentoError.message}` };
@@ -259,7 +328,7 @@ async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: Sessio
       return { valid: false, reason: `La lección "${l.topic || 'Lección'}" no tiene un examen aprobado registrado.` };
     }
 
-    let answered = false;
+    let bestVerifiedGrade = 0;
     for (const intento of intentos) {
       const { count: respCount, error: respError } = await getAdmin()
         .from('respuestas_estudiante')
@@ -268,18 +337,19 @@ async function verifyLessonsHaveAuditProof(lessonIds: unknown[], session: Sessio
       if (respError) {
         return { valid: false, reason: `No se pudieron leer las respuestas del examen: ${respError.message}` };
       }
-      if (respCount != null && respCount > 0) {
-        answered = true;
-        break;
+      if (respCount != null && respCount >= 4) {
+        bestVerifiedGrade = Math.max(bestVerifiedGrade, Number(intento.calificacion || 0));
       }
     }
 
-    if (!answered) {
-      return { valid: false, reason: `El examen de la lección "${l.topic || 'Lección'}" no tiene preguntas ni respuestas registradas.` };
+    if (bestVerifiedGrade < 6) {
+      return { valid: false, reason: `El examen de la lección "${l.topic || 'Lección'}" no tiene preguntas ni respuestas suficientes registradas.` };
     }
+
+    maxGradesByLessonId.set(String(l.id), bestVerifiedGrade);
   }
 
-  return { valid: true };
+  return { valid: true, maxGradesByLessonId };
 }
 
 function deny(message: string): never {
@@ -368,7 +438,7 @@ export async function authorizeTable(session: SessionUser, query: TableQuery) {
         if (row.bonus_credits == null) continue;
         const bonus = Math.floor(Number(row.bonus_credits));
         const grade = Number(row.grade);
-        const approved = row.completed === true || row.lesson_status === 'Aprobada' || row.lesson_status === 'Completada' || grade >= 6;
+        const approved = isTruthyCompleted(row.completed) || isApprovalStatus(row.lesson_status) || grade >= 6;
         if (!approved || !Number.isFinite(bonus) || bonus <= 0) delete row.bonus_credits;
         else row.bonus_credits = Math.min(10, bonus);
       }
@@ -413,9 +483,8 @@ export async function authorizeTable(session: SessionUser, query: TableQuery) {
     if (action === 'update' || action === 'upsert') {
       const rows = rowsOf(query.values);
       const isAttemptingApproval = rows.some((row) =>
-        row.completed === true ||
-        row.lesson_status === 'Aprobada' ||
-        row.lesson_status === 'Completada' ||
+        isTruthyCompleted(row.completed) ||
+        isApprovalStatus(row.lesson_status) ||
         (row.grade != null && Number(row.grade) >= 6) ||
         (row.bonus_credits != null && Number(row.bonus_credits) > 0)
       );
@@ -427,6 +496,30 @@ export async function authorizeTable(session: SessionUser, query: TableQuery) {
         const auditCheck = await verifyLessonsHaveAuditProof(ids, session);
         if (!auditCheck.valid) {
           deny(auditCheck.reason || 'No se puede aprobar la lección sin historial de clase con los 10 temas completados y examen verificado.');
+        }
+        const verifiedGrades = Array.from(auditCheck.maxGradesByLessonId?.values() || []);
+        const maxAllowedGrade = verifiedGrades.length > 0 ? Math.min(...verifiedGrades) : 0;
+        for (const row of rows) {
+          if (row.grade != null && Number(row.grade) > maxAllowedGrade) {
+            deny('La calificación solicitada excede la calificación verificada en el examen.');
+          }
+        }
+        return;
+      }
+
+      const wantsTopicsProgress = rows.some((row) =>
+        row.valid_interactions_count != null && Number(row.valid_interactions_count) > 0
+      );
+      if (wantsTopicsProgress) {
+        if (ids.length === 0 || !(await lessonIdsBelongTo(ids, session))) {
+          deny('No se puede registrar avance de temas sin identificar tu lección.');
+        }
+        const maxVerifiedTurns = await getMaxChatUserTurnsForLessons(ids, session);
+        for (const row of rows) {
+          if (row.valid_interactions_count != null) {
+            const requested = Math.max(0, Math.floor(Number(row.valid_interactions_count) || 0));
+            row.valid_interactions_count = Math.min(requested, maxVerifiedTurns);
+          }
         }
         return;
       }
@@ -445,6 +538,13 @@ export async function authorizeTable(session: SessionUser, query: TableQuery) {
   if (OWN_ROWS.has(table)) {
     if (isAdmin(session)) return;
     if (action === 'delete') deny('Solo un administrador puede eliminar historial o exámenes.');
+    if (table === 'class_chat_history' && (action === 'update' || action === 'upsert')) {
+      for (const row of rowsOf(query.values)) {
+        if ('chat_history' in row && !historyHasContent(row.chat_history)) {
+          deny('No puedes borrar el historial de la clase.');
+        }
+      }
+    }
     const ownerFilters = (query.filters || []).filter((filter) => filter.column === 'estudiante_id');
     if (ownerFilters.length > 0) {
       const allowed = ownerFilters.every((filter) => {
@@ -537,19 +637,24 @@ export async function authorizeRpc(session: SessionUser, fn: string, args: Recor
   if (lessonIds.length === 0) deny('No hay lecciones seleccionadas.');
   const { data, error } = await getAdmin()
     .from('student_lessons')
-    .select('id, student_username, lesson_status, grade, credits_transfered')
+    .select('id, student_username, lesson_status, grade, bonus_credits, credits_transfered')
     .in('id', lessonIds.map((id: unknown) => String(id)));
   if (error) deny(error.message);
   if (!data || data.length !== lessonIds.length) deny('Hay lecciones que no existen.');
+  let maxAllowedAmount = 0;
   for (const row of data) {
     if (!isAdmin(session) && !matches(row.student_username, session)) {
       deny('No puedes transferir lecciones de otra cuenta.');
     }
-    const approved = row.lesson_status === 'Aprobada' || row.lesson_status === 'Completada' || Number(row.grade) >= 6;
+    const approved = isApprovalStatus(row.lesson_status) || Number(row.grade) >= 6;
     if (!approved || row.credits_transfered) deny('Esas lecciones no están listas para transferir.');
+    maxAllowedAmount += Math.max(0, Number(row.grade || 0)) + Math.max(0, Math.min(10, Number(row.bonus_credits || 0)));
   }
 
   if (!isAdmin(session)) {
+    if (amount > maxAllowedAmount) {
+      deny('El monto excede los créditos acreditados de las lecciones seleccionadas.');
+    }
     const auditCheck = await verifyLessonsHaveAuditProof(lessonIds, session);
     if (!auditCheck.valid) {
       deny(auditCheck.reason || 'No se pueden transferir créditos de lecciones sin historial de clase o examen verificado.');

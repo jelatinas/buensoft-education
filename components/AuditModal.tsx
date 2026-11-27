@@ -26,11 +26,10 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
       setIsLoading(true);
       try {
         const leccionId = await getClassIdFromLesson(lesson);
-        const effectiveLeccionId = leccionId || lesson.id;
 
         const [history, examIntentos, latestLessonRow] = await Promise.all([
-          getClassChatHistory(effectiveLeccionId, studentId, studentUsername, lesson.id),
-          getIntentosExamen(studentId, effectiveLeccionId, studentUsername, lesson.id),
+          leccionId ? getClassChatHistory(leccionId, studentId, studentUsername) : Promise.resolve(null),
+          leccionId ? getIntentosExamen(studentId, leccionId, studentUsername) : Promise.resolve([]),
           getStudentLessonById(lesson.id)
         ]);
         setLessonHistory(history);
@@ -111,7 +110,22 @@ const AuditModal: React.FC<AuditModalProps> = ({ lesson, studentUsername, studen
               {activeTab === 'leccion' && (
                 <div className="w-full">
                   <VirtualClassroom 
-                    lesson={{ ...lesson, chatHistory: lessonHistory && lessonHistory.chat_history ? (typeof lessonHistory.chat_history === 'string' ? JSON.parse(lessonHistory.chat_history) : lessonHistory.chat_history) : [] }}
+                    lesson={{
+                      ...lesson,
+                      chatHistory: (() => {
+                        if (!lessonHistory?.chat_history) return [];
+                        if (Array.isArray(lessonHistory.chat_history)) return lessonHistory.chat_history;
+                        if (typeof lessonHistory.chat_history === 'string') {
+                          try {
+                            const parsed = JSON.parse(lessonHistory.chat_history);
+                            return Array.isArray(parsed) ? parsed : [];
+                          } catch {
+                            return [];
+                          }
+                        }
+                        return [];
+                      })()
+                    }}
                     user={{ id: studentId, username: studentUsername, role: Role.STUDENT }}
                     onClose={() => {}}
                     isAdminAudit={true}

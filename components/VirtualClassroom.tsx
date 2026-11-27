@@ -405,10 +405,14 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         }
 
         if (history.length === 0 && mId) {
-          const dbHistory = await getClassChatHistory(mId, user.username);
+          const dbHistory = await getClassChatHistory(mId, user.id || user.username, user.username);
           if (dbHistory && dbHistory.chat_history) {
             try {
-              history = JSON.parse(dbHistory.chat_history);
+              history = typeof dbHistory.chat_history === 'string'
+                ? JSON.parse(dbHistory.chat_history)
+                : Array.isArray(dbHistory.chat_history)
+                  ? dbHistory.chat_history
+                  : [];
             } catch (e) {
               console.error("Error parsing history", e);
             }
@@ -619,6 +623,9 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
       const finalTopics = topicsCount;
       lesson.completedTopicsCount = finalTopics;
       lesson.elapsedSeconds = time;
+      if (masterLeccionIdRef.current && msgs.length > 0) {
+        await saveClassChatHistory(masterLeccionIdRef.current, user.username, JSON.stringify(msgs));
+      }
       await updateLessonInStudent(user.username, {
         ...lesson,
         completedTopicsCount: finalTopics,
@@ -627,9 +634,6 @@ const VirtualClassroom: React.FC<VirtualClassroomProps> = ({ lesson, user, onClo
         lesson_status: currentStatus,
         completed: isAlreadyApproved
       });
-      if (masterLeccionIdRef.current && msgs.length > 0) {
-        await saveClassChatHistory(masterLeccionIdRef.current, user.username, JSON.stringify(msgs));
-      }
     } catch (e) {
       console.error("Error saving progress", e);
     }
